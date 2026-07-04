@@ -18,6 +18,9 @@ Este documento define las reglas linguisticas usadas por el escandador basico de
 - Hemistiquio por barra inline (/) y por corte global aplicado a todas las lineas.
 - Conteo en versos compuestos como n+m (cada hemistiquio se computa por separado).
 - Sinalefa automatica con posibilidad de forzar/romper manualmente por frontera.
+- Comparacion de rima por modo global: asonante, consonante o sextina.
+- Esquema de rima configurable por letras (ej: ABBAACCDDC).
+- Modo sextina con comparacion por palabra final completa y validacion del envio por grupos (ej: AB, DE, CF).
 - Revision de monosilabos atonos como soporte ritmico opcional (marcado con *).
 
 ## Reglas de separacion silabica
@@ -83,14 +86,21 @@ Este documento define las reglas linguisticas usadas por el escandador basico de
 - Si es monosilaba final: conteo metrico = bruto + 1.
 - Si es esdrujula o sobreesdrujula: conteo metrico = bruto - 1.
 
+### 3) Importante: posicion del acento final y conteo metrico
+- El bono metrico de palabra final aguda o monosilaba suma al conteo del verso.
+- Ese bono no desplaza la posicion mostrada del acento natural final.
+- Ejemplo: si el verso cuenta 9 por final aguda, el ultimo acento puede seguir mostrandose en 8.
+
 ## Patron de acentos del verso
 - Se recorre la linea palabra por palabra con indice silabico acumulado (1-based).
 - Para cada palabra polisilabica se anota la posicion de su silaba tonica.
 - Se muestra como secuencia unida por guiones, por ejemplo: 2-4-8-10.
+- En versos con hemistiquio, la visualizacion puede reiniciar la numeracion por segmento para mostrar cada hemistiquio como verso independiente.
 
 ## Acento versal
 - El poeta define un patron objetivo con posiciones silabicas (ej: 6-10, 2-4-8-10).
 - Por cada verso se comparan los acentos detectados con ese patron.
+- Ademas del patron escrito por el poeta, se incorpora el ultimo acento natural de cada hemistiquio al patron efectivo del analisis.
 - Estado visual:
   - verde: posicion presente,
   - rojo: posicion ausente,
@@ -105,6 +115,8 @@ Este documento define las reglas linguisticas usadas por el escandador basico de
   - si no hay / inline y el modo global esta activo, se usa el corte global.
 - El analisis muestra / en la linea y el conteo como n+m.
 - Cada hemistiquio se ajusta con su propia regla final (aguda +1, llana 0, esdrujula -1, monosilaba final +1).
+- No se permite sinalefa a traves de una frontera de hemistiquio.
+- Los acentos finales naturales de cada hemistiquio se incorporan al patron versal efectivo.
 
 ## Sinalefa
 - Candidata cuando una palabra termina en vocal fonica y la siguiente empieza en vocal fonica (incluyendo h muda).
@@ -113,7 +125,58 @@ Este documento define las reglas linguisticas usadas por el escandador basico de
   - evita sinalefa en frontera de hemistiquio,
   - evita sinalefa cuando compromete una frontera de acento versal objetivo.
 - El poeta puede alternar manualmente cada frontera candidata desde el analisis.
+- Si se pulsa "Detectar automaticamente", se limpian forzados manuales y se recalcula la sinalefa segun estas reglas.
+- Las cadenas de sinalefa consecutiva solo se compactan como una unica union cuando el patron vocalico permite un triptongo real.
 - La pausa de final de verso impide sinalefa entre versos.
+
+## Rima y esquema
+
+### 1) Modos de rima
+- Asonante: se compara la vocal tonica final y la ultima vocal de la palabra final.
+- Consonante: se compara la cola desde la vocal tonica de la palabra final.
+- Sextina: se compara la palabra final completa normalizada, no solo la terminacion rimica.
+
+### 2) Palabra final usada para rima
+- La rima se calcula sobre la ultima palabra analizada de cada verso.
+- La palabra se normaliza quitando puntuacion periferica y diferencias graficas no relevantes para la comparacion interna.
+
+### 3) Esquema de rima configurable
+- El usuario puede escribir un esquema por letras, por ejemplo: ABBAACCDDC o ABBA ABBA CDE CDE.
+- Para modos asonante y consonante, cada letra representa la clase de rima esperada de un verso.
+- Si el poema tiene mas versos que letras, se validan solo los primeros N versos, donde N = longitud efectiva del esquema.
+- Si el esquema tiene mas letras que versos, se valida solo el tramo disponible del poema.
+- Cada verso validado puede marcarse como correcto o incorrecto respecto a la letra esperada.
+
+### 4) Esquema de sextina
+- En modo sextina, los bloques de seis letras continuas se interpretan como seis versos separados:
+  - ABCDEF = A, B, C, D, E, F
+- Los grupos del envio se mantienen como grupos:
+  - AB, DE, CF
+- El esquema por defecto usado por la app en modo sextina es:
+  - ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB DE CF
+
+### 5) Validacion del envio en sextina
+- En los seis sextetos, cada verso debe cerrar con la palabra final base correspondiente a su letra.
+- En el envio final, un grupo como AB exige que ambas palabras-base aparezcan dentro del verso, no necesariamente como ultima palabra unica.
+
+## Configuraciones poeticas sugeridas en la guia
+- Soneto:
+  - 14 versos
+  - endecasilabo habitual
+  - acento versal sugerido: 6-10
+  - esquema habitual sugerido: ABBA ABBA CDC DCD
+- Espinela:
+  - 10 versos
+  - octosilabo
+  - acento versal sugerido: 7
+  - esquema sugerido: ABBAACCDDC
+- Sonetillo:
+  - 14 versos octosilabos
+  - puede reutilizar el esquema del soneto como referencia formal basica
+- Sextina:
+  - 6 sextetos y un envio de 3 versos
+  - comparacion por palabra final completa
+  - esquema por defecto: ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB DE CF
 
 ## Monosilabos y ritmo
 - Se distingue entre monosilabos atonos funcionales y monosilabos tonicos.

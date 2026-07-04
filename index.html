@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Escandador de poesía</title>
+    <title>Escandidor de poesía</title>
     <meta
       name="description"
       content="Analizador básico de poesía en español con separación silábica, conteo métrico y acentuación visible."
@@ -16,7 +16,7 @@
       <section class="hero">
         <div>
           <p class="eyebrow">Poesía en español</p>
-          <h1>Escandador básico para poetas</h1>
+          <h1>Escandidor básico para poetas</h1>
           <p class="lede">
             Escribe un poema a la izquierda y obtén separación silábica, sílaba tónica y conteo métrico ajustado a la derecha.
           </p>
@@ -29,6 +29,15 @@
             <span>Configuración</span>
             <span class="summary-hint">
               Acento versal, hemistiquio, sinalefa y rima
+              <span class="guide-hover" tabindex="0">
+                <span class="guide-trigger" aria-label="Ver guía de formas">i</span>
+                <span class="guide-popover">
+                  <strong>Soneto:</strong> 14 versos, acento versal sugerido 6-10, esquema habitual ABBA ABBA CDC DCD.<br />
+                  <strong>Espinela:</strong> 10 versos, octosílabo, acento versal sugerido 7, esquema ABBAACCDDC.<br />
+                  <strong>Sonetillo:</strong> 14 versos octosílabos; puedes usar el mismo esquema del soneto.<br />
+                  <strong>Sextina:</strong> usa modo de rima Sextina para comparar palabras finales completas.
+                </span>
+              </span>
               <svg class="config-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M6 9l6 6 6-6" />
               </svg>
@@ -77,8 +86,10 @@
                 <select id="rhymeMode" title="Define el modo de comparación de rima por defecto para todos los versos.">
                   <option value="asonante" selected>Asonante</option>
                   <option value="consonante">Consonante</option>
+                  <option value="sextina">Sextina</option>
                 </select>
-                <p class="hint">Puedes sobrescribir la rima por verso desde Avanzado escribiendo una clave manual.</p>
+                <label for="rhymeScheme">Esquema de rima</label>
+                <input id="rhymeScheme" type="text" value="" title="Escribe un esquema de rima como ABBAACCDDC o ABBAABBA CDE CDE. Se validan las letras de los versos en orden." />
               </div>
             </details>
           </div>
@@ -106,7 +117,7 @@
         <article class="panel output-panel">
           <div class="panel-header">
             <h2>Análisis</h2>
-            <span class="panel-header-meta"><span id="stanzaSummaryBadge" class="badge">Estrofas 1</span><button id="analysisModeToggle" type="button" class="secondary compact-action" title="Alterna entre vista visual y vista texto para copiar y pegar.">Modo texto</button></span>
+            <span class="panel-header-meta"><span id="stanzaSummaryBadge" class="badge">Estrofas 1</span><span id="rhymeSchemeBadge" class="badge">Esquema libre</span><button id="analysisModeToggle" type="button" class="secondary compact-action" title="Alterna entre vista visual y vista texto para copiar y pegar.">Modo texto</button></span>
           </div>
           <div id="analysisOutput" class="analysis-output" aria-live="polite"></div>
           <pre id="analysisTextOutput" class="analysis-text-output hidden" aria-live="polite"></pre>

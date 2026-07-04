@@ -12,8 +12,10 @@ const stressPreset = document.getElementById('stressPreset');
 const stressCustom = document.getElementById('stressCustom');
 const hemistichSplit = document.getElementById('hemistichSplit');
 const rhymeMode = document.getElementById('rhymeMode');
+const rhymeScheme = document.getElementById('rhymeScheme');
 const sinalefaEnabled = document.getElementById('sinalefaEnabled');
 const stanzaSummaryBadge = document.getElementById('stanzaSummaryBadge');
+const rhymeSchemeBadge = document.getElementById('rhymeSchemeBadge');
 const poemTitle = document.getElementById('poemTitle');
 const savePoem = document.getElementById('savePoem');
 const loadPoem = document.getElementById('loadPoem');
@@ -38,6 +40,8 @@ que indican un nuevo día.
 Sueñan, quizás, que la vida
 es más estrellas que alarmas. `;
 
+const DEFAULT_SEXTINA_SCHEME = 'ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB DE CF';
+
 
 const LOCAL_POEM_MEMORY_KEY = 'escandador.poemMemory.v1';
 const AUTO_SAVE_DELAY_MS = 1200;
@@ -47,6 +51,7 @@ const state = {
   hemistichEnabled: false,
   hemistichPositions: [],
   rhymeMode: 'asonante',
+  rhymeScheme: '',
   analysisMode: 'visual',
   sinalefaEnabled: true,
   conservativeSinalefa: true,
@@ -194,7 +199,8 @@ function buildCurrentSnapshot() {
       stressPreset: stressPreset.value,
       stressCustom: stressCustom.value,
       hemistichSplit: hemistichSplit.value,
-      rhymeMode: rhymeMode?.value ?? 'asonante'
+      rhymeMode: rhymeMode?.value ?? 'asonante',
+      rhymeScheme: rhymeScheme?.value ?? ''
     }
   };
 }
@@ -206,7 +212,8 @@ function getSnapshotSignature(snapshot) {
       stressPreset: String(snapshot.settings?.stressPreset ?? ''),
       stressCustom: String(snapshot.settings?.stressCustom ?? ''),
       hemistichSplit: String(snapshot.settings?.hemistichSplit ?? ''),
-      rhymeMode: String(snapshot.settings?.rhymeMode ?? 'asonante')
+      rhymeMode: String(snapshot.settings?.rhymeMode ?? 'asonante'),
+      rhymeScheme: String(snapshot.settings?.rhymeScheme ?? '')
     }
   });
 }
@@ -283,6 +290,9 @@ function loadSelectedPoemVersion() {
     hemistichSplit.value = String(selected.version.settings.hemistichSplit ?? hemistichSplit.value);
     if (rhymeMode) {
       rhymeMode.value = selected.version.settings.rhymeMode === 'consonante' ? 'consonante' : 'asonante';
+    }
+    if (rhymeScheme) {
+      rhymeScheme.value = String(selected.version.settings.rhymeScheme ?? rhymeScheme.value);
     }
   }
 
@@ -655,7 +665,8 @@ function extractRhymeData(lineAnalysis) {
   if (!lastWord || !lastWord.syllables.length) {
     return {
       consonantKey: '-',
-      assonantKey: '-'
+      assonantKey: '-',
+      finalWordKey: '-'
     };
   }
 
@@ -663,7 +674,8 @@ function extractRhymeData(lineAnalysis) {
   if (!normalizedWord) {
     return {
       consonantKey: '-',
-      assonantKey: '-'
+      assonantKey: '-',
+      finalWordKey: '-'
     };
   }
 
@@ -679,19 +691,216 @@ function extractRhymeData(lineAnalysis) {
   const allWordVowels = extractNormalizedVowels(normalizedWord);
   const lastVowel = allWordVowels ? allWordVowels[allWordVowels.length - 1] : '';
   const assonantKey = `${stressedVowel}${lastVowel}` || '-';
+  const finalWordKey = normalizeValidationWord(lastWord.original || normalizedWord) || '-';
 
   return {
     consonantKey,
-    assonantKey
+    assonantKey,
+    finalWordKey
   };
 }
 
 function getEffectiveRhymeMode(lineIndex) {
   const local = String(getLineOverride(lineIndex).rhymeMode ?? '').trim();
-  if (local === 'asonante' || local === 'consonante') {
+  if (local === 'asonante' || local === 'consonante' || local === 'sextina') {
     return local;
   }
   return state.rhymeMode;
+}
+
+function normalizeValidationWord(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+}
+
+function normalizeRhymeScheme(value) {
+  return String(value ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '');
+}
+
+function tokenizeRhymeScheme(value, mode = state.rhymeMode) {
+  const raw = String(value ?? '').trim().toUpperCase();
+  if (!raw) {
+    return [];
+  }
+
+  if (mode === 'sextina') {
+    const grouped = raw.match(/[A-Z]+/g) ?? [];
+    const tokens = [];
+
+    for (const chunk of grouped) {
+      if (chunk.length === 6) {
+        tokens.push(...chunk.split(''));
+        continue;
+      }
+
+      tokens.push(chunk);
+    }
+
+    return tokens;
+  }
+
+  return normalizeRhymeScheme(raw).split('').filter(Boolean);
+}
+
+function markRhymeSchemeFailure(lineStatus, runtime, reason) {
+  if (!runtime || !reason) {
+    return;
+  }
+
+  const existing = lineStatus.get(runtime.lineIndex) ?? { valid: true, reasons: [], expectedLetter: '', verseNumber: 0 };
+  existing.valid = false;
+  existing.reasons = [...existing.reasons, reason];
+  lineStatus.set(runtime.lineIndex, existing);
+}
+
+function validateRhymeScheme(runtimes, schemeValue, mode = state.rhymeMode) {
+  const verseRuntimes = runtimes.filter((runtime) => runtime.lineAnalysis.text.trim());
+  const tokens = tokenizeRhymeScheme(schemeValue, mode);
+  const scheme = mode === 'sextina' ? tokens.join(' ') : tokens.join('');
+  const lineStatus = new Map();
+
+  if (!tokens.length) {
+    return {
+      valid: true,
+      summary: 'Esquema libre',
+      failingVerses: [],
+      lineStatus,
+      scheme
+    };
+  }
+
+  if (mode === 'sextina') {
+    const checkedCount = Math.min(verseRuntimes.length, tokens.length);
+    const checkedRuntimes = verseRuntimes.slice(0, checkedCount);
+    const baseWords = checkedRuntimes.slice(0, 6).map((runtime) => normalizeValidationWord(runtime.lineAnalysis.lastWord));
+
+    for (let index = 0; index < checkedRuntimes.length; index += 1) {
+      const runtime = checkedRuntimes[index];
+      const expectedToken = tokens[index] ?? '';
+      const current = lineStatus.get(runtime.lineIndex) ?? { valid: true, reasons: [] };
+      current.expectedLetter = expectedToken;
+      current.verseNumber = index + 1;
+      lineStatus.set(runtime.lineIndex, current);
+
+      const lineWords = runtime.lineAnalysis.analyses.map((word) => normalizeValidationWord(word.original)).filter(Boolean);
+      const expectedWords = expectedToken
+        .split('')
+        .map((letter) => baseWords[letter.charCodeAt(0) - 65])
+        .filter(Boolean);
+
+      if (!expectedWords.length) {
+        markRhymeSchemeFailure(lineStatus, runtime, `Token de sextina inválido: ${expectedToken}.`);
+        continue;
+      }
+
+      if (expectedToken.length === 1) {
+        const finalWord = normalizeValidationWord(runtime.lineAnalysis.lastWord);
+        if (finalWord !== expectedWords[0]) {
+          markRhymeSchemeFailure(lineStatus, runtime, `Debe cerrar con ${expectedWords[0]}.`);
+        }
+        continue;
+      }
+
+      const missingWords = expectedWords.filter((word) => !lineWords.includes(word));
+      if (missingWords.length) {
+        markRhymeSchemeFailure(lineStatus, runtime, `Faltan end-words de sextina: ${missingWords.join(', ')}.`);
+      }
+    }
+
+    const failingVerses = checkedRuntimes
+      .map((runtime, index) => ({ runtime, verseNumber: index + 1 }))
+      .filter(({ runtime }) => lineStatus.get(runtime.lineIndex)?.valid === false)
+      .map(({ verseNumber }) => verseNumber);
+
+    const checkedLabel = checkedCount < verseRuntimes.length || checkedCount < tokens.length
+      ? ` (v. 1-${checkedCount})`
+      : '';
+
+    return {
+      valid: failingVerses.length === 0,
+      summary: failingVerses.length ? `${scheme}${checkedLabel}: falla v. ${failingVerses.join(', ')}` : `${scheme}${checkedLabel}`,
+      failingVerses,
+      lineStatus,
+      scheme
+    };
+  }
+
+  const checkedCount = Math.min(verseRuntimes.length, tokens.length);
+  const checkedRuntimes = verseRuntimes.slice(0, checkedCount);
+
+  const letterToKey = new Map();
+  const keyToLetter = new Map();
+
+  for (let index = 0; index < checkedRuntimes.length; index += 1) {
+    const runtime = checkedRuntimes[index];
+    const expectedLetter = tokens[index];
+    const actualKey = normalizeValidationWord(runtime.rhyme?.activeKey ?? '');
+    const current = lineStatus.get(runtime.lineIndex) ?? { valid: true, reasons: [] };
+    current.expectedLetter = expectedLetter;
+    current.verseNumber = index + 1;
+    lineStatus.set(runtime.lineIndex, current);
+
+    if (!actualKey) {
+      markRhymeSchemeFailure(lineStatus, runtime, 'No hay rima definida para este verso.');
+      continue;
+    }
+
+    if (!letterToKey.has(expectedLetter)) {
+      const mappedLetter = keyToLetter.get(actualKey);
+      if (mappedLetter && mappedLetter !== expectedLetter) {
+        markRhymeSchemeFailure(lineStatus, runtime, `La rima ya se usa en la letra ${mappedLetter}.`);
+        continue;
+      }
+
+      letterToKey.set(expectedLetter, actualKey);
+      keyToLetter.set(actualKey, expectedLetter);
+      continue;
+    }
+
+    if (letterToKey.get(expectedLetter) !== actualKey) {
+      markRhymeSchemeFailure(lineStatus, runtime, `Debe rimar como ${expectedLetter}.`);
+    }
+  }
+
+  const failingVerses = checkedRuntimes
+    .map((runtime, index) => ({ runtime, verseNumber: index + 1 }))
+    .filter(({ runtime }) => lineStatus.get(runtime.lineIndex)?.valid === false)
+    .map(({ verseNumber }) => verseNumber);
+
+  const checkedLabel = checkedCount < verseRuntimes.length || checkedCount < scheme.length
+    ? ` (v. 1-${checkedCount})`
+    : '';
+
+  return {
+    valid: failingVerses.length === 0,
+    summary: failingVerses.length ? `${scheme}${checkedLabel}: falla v. ${failingVerses.join(', ')}` : `${scheme}${checkedLabel}`,
+    failingVerses,
+    lineStatus,
+    scheme
+  };
+}
+
+function renderRhymeSchemeStatus(runtime, rhymeSchemeValidation) {
+  if (!runtime?.lineAnalysis?.text.trim() || !rhymeSchemeValidation?.scheme) {
+    return '';
+  }
+
+  const status = rhymeSchemeValidation.lineStatus.get(runtime.lineIndex);
+  if (!status) {
+    return '';
+  }
+
+  const expectedLetter = status.expectedLetter || '';
+  const classes = ['scheme-chip', status.valid ? 'is-valid' : 'is-invalid'].join(' ');
+  const suffix = status.valid ? '✓' : '✕';
+  const title = status.reasons.length ? status.reasons.join(' · ') : `Cumple el esquema ${rhymeSchemeValidation.scheme}.`;
+  return `<span class="${classes}" title="${escapeHtml(title)}">${escapeHtml(expectedLetter)} ${suffix}</span>`;
 }
 
 function getManualRhymeKey(lineIndex) {
@@ -998,12 +1207,7 @@ function buildMetricStressData(entries, segments) {
       continue;
     }
 
-    const isSegmentTerminalStress =
-      entry.wordIndex === segment.endWord &&
-      entry.isStress &&
-      (segment.accentType === 'aguda' || segment.accentType === 'monosílaba');
-
-    const metricPosition = entry.effectivePosition + segment.offsetBefore + (isSegmentTerminalStress ? 1 : 0);
+    const metricPosition = entry.effectivePosition + segment.offsetBefore;
     metricEntries.push({
       ...entry,
       metricPosition,
@@ -1319,7 +1523,11 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
   const mode = getEffectiveRhymeMode(lineIndex);
   const manualKey = getManualRhymeKey(lineIndex);
   const manualLabel = getManualRhymeLabel(lineIndex);
-  const activeKey = manualKey || (mode === 'consonante' ? rhymeData.consonantKey : rhymeData.assonantKey);
+  const activeKey = manualKey || (mode === 'consonante'
+    ? rhymeData.consonantKey
+    : mode === 'sextina'
+      ? rhymeData.finalWordKey
+      : rhymeData.assonantKey);
 
   return {
     lineIndex,
@@ -1339,6 +1547,7 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
       mode,
       consonantKey: rhymeData.consonantKey,
       assonantKey: rhymeData.assonantKey,
+      finalWordKey: rhymeData.finalWordKey,
       manualLabel,
       manualKey,
       activeKey,
@@ -1375,9 +1584,12 @@ function renderSinalefaChainLabel(runtime, startIndex, endIndex) {
 }
 
 function renderRhyme(runtime) {
-  const modeLabel = runtime.rhyme.mode === 'consonante' ? 'consonante' : 'asonante';
+  const modeLabel = runtime.rhyme.mode === 'consonante' ? 'consonante' : runtime.rhyme.mode === 'sextina' ? 'sextina' : 'asonante';
   const source = runtime.rhyme.manualLabel ? 'manual' : modeLabel;
-  return `<span class="rhyme-chip" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}.">${escapeHtml(runtime.rhyme.label)}</span>`;
+  const label = String(runtime.rhyme.label ?? '').trim();
+  const colorIndex = label && label !== '-' ? (label.toUpperCase().charCodeAt(0) - 65) % 6 : 0;
+  const colorClass = `rhyme-tone-${colorIndex}`;
+  return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>`;
 }
 
 function formatWordInline(wordAnalysis) {
@@ -1613,6 +1825,12 @@ function renderAnalysis(result) {
   const runtimes = result.lines.map((line, index) => buildLineRuntime(line, index));
   assignRhymeLabels(runtimes);
   lastRuntime = runtimes;
+  const rhymeSchemeValidation = validateRhymeScheme(runtimes, state.rhymeScheme, state.rhymeMode);
+
+  if (rhymeSchemeBadge) {
+    rhymeSchemeBadge.className = rhymeSchemeValidation.valid ? 'badge scheme-badge is-valid' : 'badge scheme-badge is-invalid';
+    rhymeSchemeBadge.textContent = rhymeSchemeValidation.summary;
+  }
 
   analysisOutput.innerHTML = `
     <section class="clean-analysis">
@@ -1629,6 +1847,7 @@ function renderAnalysis(result) {
                   <div class="analysis-col visual-col">${renderAnnotatedLine(runtime)}</div>
                   <div class="analysis-col stress-col">${renderPositionTrack(runtime)} ${renderInvalidHemistich(runtime)}${runtime.sinalefaNotice ? `<span class="hover-hint" title="${escapeHtml(runtime.sinalefaNotice)}">!</span>` : ''}</div>
                   <div class="analysis-col rhyme-col">${renderRhyme(runtime)}</div>
+                  <div class="analysis-col scheme-col">${renderRhymeSchemeStatus(runtime, rhymeSchemeValidation)}</div>
                   <div class="analysis-col advanced-col">${renderLineAdvanced(runtime)}</div>
                   <div class="analysis-col count-col">${runtime.countLabel}</div>
                 </div>
@@ -1650,8 +1869,27 @@ function syncStateFromControls() {
   state.stressPattern = parseStressPattern(stressCustom.value);
   state.hemistichPositions = parseHemistichPositions(hemistichSplit.value);
   state.hemistichEnabled = state.hemistichPositions.length > 0;
-  state.rhymeMode = rhymeMode?.value === 'consonante' ? 'consonante' : 'asonante';
+  state.rhymeMode = rhymeMode?.value === 'consonante' ? 'consonante' : rhymeMode?.value === 'sextina' ? 'sextina' : 'asonante';
+  state.rhymeScheme = rhymeScheme?.value ?? '';
   state.sinalefaEnabled = true;
+}
+
+function syncRhymeSchemePreset() {
+  if (!rhymeMode || !rhymeScheme) {
+    return;
+  }
+
+  const normalizedCurrent = String(rhymeScheme.value ?? '').trim();
+  if (rhymeMode.value === 'sextina') {
+    if (!normalizedCurrent || normalizedCurrent === DEFAULT_SEXTINA_SCHEME) {
+      rhymeScheme.value = DEFAULT_SEXTINA_SCHEME;
+    }
+    return;
+  }
+
+  if (normalizedCurrent === DEFAULT_SEXTINA_SCHEME) {
+    rhymeScheme.value = '';
+  }
 }
 
 function buildStanzaSummary(text) {
@@ -1681,6 +1919,7 @@ function buildStanzaSummary(text) {
 function updateAnalysis() {
   const focusSnapshot = captureInlineInputFocus();
   setPoemTitleDisplay(poemTitle?.value ?? '');
+  syncRhymeSchemePreset();
   syncStateFromControls();
   const text = normalizeInput(poemInput.value);
   const result = analyzePoem(text);
@@ -1742,7 +1981,11 @@ stressCustom.addEventListener('input', () => {
 });
 
 hemistichSplit.addEventListener('input', updateAnalysis);
-rhymeMode?.addEventListener('change', updateAnalysis);
+rhymeMode?.addEventListener('change', () => {
+  syncRhymeSchemePreset();
+  updateAnalysis();
+});
+rhymeScheme?.addEventListener('input', updateAnalysis);
 analysisModeToggle?.addEventListener('click', () => {
   state.analysisMode = state.analysisMode === 'visual' ? 'text' : 'visual';
   applyAnalysisMode();
