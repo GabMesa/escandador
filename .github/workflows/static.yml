@@ -35,11 +35,16 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Prepare Pages artifact
+        run: |
+          site_dir="${{ runner.temp }}/pages-artifact"
+          mkdir -p "$site_dir/opendyslexic-0.92"
+          cp index.html styles.css app.js analyzer.js "$site_dir"/
+          cp opendyslexic-0.92/*.otf "$site_dir/opendyslexic-0.92"/
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: ${{ runner.temp }}/pages-artifact
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
