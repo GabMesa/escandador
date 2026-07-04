@@ -1,0 +1,7 @@
+{
+  "name": "escandador",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Escandador básico de poesía en español para hosting estático."
+}

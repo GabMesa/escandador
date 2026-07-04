@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Escandador de poesía</title>
+    <meta
+      name="description"
+      content="Analizador básico de poesía en español con separación silábica, conteo métrico y acentuación visible."
+    />
+    <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/open-dyslexic" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Poesía en español</p>
+          <h1>Escandador básico para poetas</h1>
+          <p class="lede">
+            Escribe un poema a la izquierda y obtén separación silábica, sílaba tónica y conteo métrico ajustado a la derecha.
+          </p>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Controles métricos">
+        <details class="control-card config-shell" open>
+          <summary>
+            <span>Configuración</span>
+            <span class="summary-hint">
+              Acento versal, hemistiquio, sinalefa y rima
+              <svg class="config-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </span>
+          </summary>
+
+          <div class="config-grid">
+            <details class="config-group" open>
+              <summary>Acento versal</summary>
+              <div class="config-body">
+                <label for="stressPreset">Patrón</label>
+                <select id="stressPreset" title="Selecciona un patrón sugerido de acentos versales.">
+                  <option value="6-10">Endecasílabo 6-10</option>
+                  <option value="2-4-8-10">Endecasílabo 2-4-8-10</option>
+                  <option value="3-6-10">Endecasílabo 3-6-10</option>
+                  <option value="3-7">Octosílabo 3-7</option>
+                  <option value="custom" selected>Personalizado</option>
+                </select>
+                <label for="stressCustom">Personalizado (ej: 2-4-8-10)</label>
+                <input id="stressCustom" type="text" value="" title="Escribe posiciones de acento versal separadas por guiones o comas (ej: 4-8-10)." />
+              </div>
+            </details>
+
+            <details class="config-group" open>
+              <summary>Hemistiquio</summary>
+              <div class="config-body">
+                <label for="hemistichSplit">Cortes globales (ej: 6,12)</label>
+                <input id="hemistichSplit" type="text" value="" title="Define cortes de hemistiquio globales. Si está vacío, no se aplica hemistiquio." />
+                <p class="hint">Si este campo está vacío, no se aplica hemistiquio global.</p>
+                <p class="hint">También puedes usar <strong>/</strong> dentro del verso para separar hemistiquios manualmente.</p>
+              </div>
+            </details>
+
+            <details class="config-group" open>
+              <summary>Sinalefa</summary>
+              <div class="config-body">
+                <button id="sinalefaEnabled" type="button" class="secondary compact-action" title="Recalcula la sinalefa automática y limpia overrides globales.">Detectar automáticamente</button>
+                <p class="hint">Haz clic en cada unión para forzar o romper la sinalefa. El acento versal siempre la corta.</p>
+              </div>
+            </details>
+
+            <details class="config-group" open>
+              <summary>Rima</summary>
+              <div class="config-body">
+                <label for="rhymeMode">Modo global</label>
+                <select id="rhymeMode" title="Define el modo de comparación de rima por defecto para todos los versos.">
+                  <option value="asonante" selected>Asonante</option>
+                  <option value="consonante">Consonante</option>
+                </select>
+                <p class="hint">Puedes sobrescribir la rima por verso desde Avanzado escribiendo una clave manual.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+      </section>
+
+      <section class="workspace">
+        <article class="panel input-panel">
+          <div class="panel-header">
+            <input id="poemTitle" class="poem-panel-title-input" type="text" value="Sin título" title="Título del poema" aria-label="Título del poema" />
+            <span class="panel-header-meta"><button id="savePoem" type="button" class="secondary icon-action" title="Guardar poema (Ctrl+S)">💾</button><button id="loadPoem" type="button" class="secondary icon-action" title="Cargar versión seleccionada (Ctrl+Shift+L)">📂</button><button id="importPoemsMd" type="button" class="secondary icon-action" title="Importar poemas desde archivo Markdown">📥</button><button id="exportPoemsMd" type="button" class="secondary icon-action" title="Descargar poemas guardados como Markdown">📤</button></span>
+          </div>
+          <div class="input-memory-bar">
+            <select id="savedPoemName" title="Selecciona un poema guardado en memoria local."></select>
+            <button id="deletePoemEntry" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar todas las versiones del poema seleccionado">🗑</button>
+            <label for="savedPoemVersion">Versión</label>
+            <select id="savedPoemVersion" title="Selecciona una versión anterior del poema guardado."></select>
+            <button id="deletePoemVersion" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar la versión seleccionada del historial">🗑</button>
+          </div>
+          <label class="sr-only" for="poemInput">Poema</label>
+          <textarea id="poemInput" spellcheck="false" aria-label="Poema" title="Escribe o pega aquí tu poema. Usa líneas en blanco para separar estrofas."></textarea>
+          <input id="importPoemsFile" class="hidden" type="file" accept=".md,text/markdown,text/plain" />
+        </article>
+
+        <article class="panel output-panel">
+          <div class="panel-header">
+            <h2>Análisis</h2>
+            <span class="panel-header-meta"><span id="stanzaSummaryBadge" class="badge">Estrofas 1</span><button id="analysisModeToggle" type="button" class="secondary compact-action" title="Alterna entre vista visual y vista texto para copiar y pegar.">Modo texto</button></span>
+          </div>
+          <div id="analysisOutput" class="analysis-output" aria-live="polite"></div>
+          <pre id="analysisTextOutput" class="analysis-text-output hidden" aria-live="polite"></pre>
+        </article>
+      </section>
+
+      <footer class="app-footer">De Mesa© para el <a href="https://discord.gg/mSz3ER2JKR" target="_blank" rel="noopener noreferrer">Busto de Paellas</a>.</footer>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
