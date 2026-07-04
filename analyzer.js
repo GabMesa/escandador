@@ -381,11 +381,36 @@ export function classifyWordAccentType(syllables, stressIndex) {
   return 'sobreesdrújula';
 }
 
+function getSecondaryStressIndicesForMenteAdverb(originalWord, syllables, primaryStressIndex) {
+  const normalized = sanitizeWord(originalWord);
+  if (!normalized.endsWith('mente')) {
+    return [];
+  }
+
+  // Most adverbs in -mente keep the adjective stress and add stress on "men".
+  const menteSyllableCount = 2;
+  if (syllables.length <= menteSyllableCount) {
+    return [];
+  }
+
+  const secondaryStressIndex = syllables.length - 3;
+  if (!Number.isInteger(secondaryStressIndex) || secondaryStressIndex < 0 || secondaryStressIndex >= syllables.length) {
+    return [];
+  }
+
+  if (secondaryStressIndex === primaryStressIndex) {
+    return [];
+  }
+
+  return [secondaryStressIndex];
+}
+
 export function analyzeWord(inputWord) {
   const original = String(inputWord ?? '').trim();
   const normalized = sanitizeWord(original);
   const syllables = mapSyllablesToOriginalCase(original, syllabifyWord(original));
   const stressIndex = detectStressSyllable(original, syllables);
+  const secondaryStressIndices = getSecondaryStressIndicesForMenteAdverb(original, syllables, stressIndex);
   const accentType = classifyWordAccentType(syllables, stressIndex);
 
   return {
@@ -393,6 +418,7 @@ export function analyzeWord(inputWord) {
     normalized,
     syllables,
     stressIndex,
+    secondaryStressIndices,
     accentType,
     syllableCount: syllables.length,
     hasWrittenAccent: findAccentedVowelIndex(normalized) !== -1

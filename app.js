@@ -493,9 +493,11 @@ function formatWordPlain(wordAnalysis) {
     return String(wordAnalysis?.original ?? '');
   }
 
+  const displayStressIndices = getDisplayStressIndices(wordAnalysis);
+
   return wordAnalysis.syllables
     .map((syllable, index) => {
-      if (index === wordAnalysis.stressIndex && wordAnalysis.accentType !== 'monosílaba') {
+      if (displayStressIndices.has(index)) {
         return `*${syllable}*`;
       }
       return syllable;
@@ -958,6 +960,80 @@ function assignRhymeLabels(runtimes) {
 
     runtime.rhyme.label = labelByGroup.get(groupKey);
   }
+}
+
+function computeAsonanteConsonantMixWarnings(runtimes) {
+  const warningsByLine = new Map();
+  if (state.rhymeMode !== 'asonante') {
+    return warningsByLine;
+  }
+
+  const verseRuntimes = runtimes.filter((runtime) => {
+    return runtime.lineAnalysis.text.trim() && runtime.rhyme.mode === 'asonante' && runtime.rhyme.assonantKey !== '-';
+  });
+
+  const byAsonantKey = new Map();
+  for (const runtime of verseRuntimes) {
+    const key = runtime.rhyme.assonantKey;
+    if (!byAsonantKey.has(key)) {
+      byAsonantKey.set(key, []);
+    }
+    byAsonantKey.get(key).push(runtime);
+  }
+
+  for (const [assonantKey, group] of byAsonantKey.entries()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const byConsonantKey = new Map();
+    for (const runtime of group) {
+      const consonantKey = runtime.rhyme.consonantKey;
+      if (!byConsonantKey.has(consonantKey)) {
+        byConsonantKey.set(consonantKey, []);
+      }
+      byConsonantKey.get(consonantKey).push(runtime);
+    }
+
+    const consonantSubgroups = [...byConsonantKey.values()].filter((items) => items.length >= 2);
+    if (!consonantSubgroups.length || byConsonantKey.size <= 1) {
+      continue;
+    }
+
+    for (const subgroup of consonantSubgroups) {
+      for (const runtime of subgroup) {
+        warningsByLine.set(
+          runtime.lineIndex,
+          `Consonancia dentro de rima asonante (${assonantKey}). Puede mezclar consonante y asonante en la misma serie.`
+        );
+      }
+    }
+  }
+
+  return warningsByLine;
+}
+
+function getDisplayStressIndices(wordAnalysis) {
+  const indices = new Set();
+  if (!wordAnalysis || !Array.isArray(wordAnalysis.syllables)) {
+    return indices;
+  }
+
+  if (wordAnalysis.accentType !== 'monosílaba' && Number.isInteger(wordAnalysis.stressIndex)) {
+    indices.add(wordAnalysis.stressIndex);
+  }
+
+  const secondaryIndices = Array.isArray(wordAnalysis.secondaryStressIndices)
+    ? wordAnalysis.secondaryStressIndices
+    : [];
+
+  for (const index of secondaryIndices) {
+    if (Number.isInteger(index) && index >= 0 && index < wordAnalysis.syllables.length) {
+      indices.add(index);
+    }
+  }
+
+  return indices;
 }
 
 function escapeHtml(value) {
@@ -1587,9 +1663,11 @@ function renderRhyme(runtime) {
   const modeLabel = runtime.rhyme.mode === 'consonante' ? 'consonante' : runtime.rhyme.mode === 'sextina' ? 'sextina' : 'asonante';
   const source = runtime.rhyme.manualLabel ? 'manual' : modeLabel;
   const label = String(runtime.rhyme.label ?? '').trim();
+  const mixWarning = String(runtime.rhyme.mixWarning ?? '').trim();
   const colorIndex = label && label !== '-' ? (label.toUpperCase().charCodeAt(0) - 65) % 6 : 0;
   const colorClass = `rhyme-tone-${colorIndex}`;
-  return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>`;
+  const warningHint = mixWarning ? `<span class="hover-hint" title="${escapeHtml(mixWarning)}">!</span>` : '';
+  return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>${warningHint}`;
 }
 
 function formatWordInline(wordAnalysis) {
@@ -1601,10 +1679,12 @@ function formatWordInline(wordAnalysis) {
     return wordAnalysis.syllables.map((syllable) => escapeHtml(syllable)).join('-');
   }
 
+  const displayStressIndices = getDisplayStressIndices(wordAnalysis);
+
   return wordAnalysis.syllables
     .map((syllable, index) => {
       const clean = escapeHtml(syllable);
-      return index === wordAnalysis.stressIndex ? `<strong>${clean}</strong>` : clean;
+      return displayStressIndices.has(index) ? `<strong>${clean}</strong>` : clean;
     })
     .join('-');
 }
@@ -1618,6 +1698,7 @@ function renderWordInlineWithBoundaryAwareness(wordAnalysis, wordIndex, runtime)
   const nextBoundary = runtime.activeBoundaries[wordIndex];
   const hideFirst = Boolean(previousBoundary?.candidate && !previousBoundary?.blockedByHemistich);
   const hideLast = Boolean(nextBoundary?.candidate && !nextBoundary?.blockedByHemistich);
+  const displayStressIndices = getDisplayStressIndices(wordAnalysis);
 
   const syllables = wordAnalysis.syllables
     .map((syllable, index) => {
@@ -1628,7 +1709,7 @@ function renderWordInlineWithBoundaryAwareness(wordAnalysis, wordIndex, runtime)
       }
 
       const clean = escapeHtml(syllable);
-      return index === wordAnalysis.stressIndex ? `<strong>${clean}</strong>` : clean;
+      return displayStressIndices.has(index) ? `<strong>${clean}</strong>` : clean;
     })
     .filter(Boolean)
     .join('-');
@@ -1824,6 +1905,10 @@ function renderAnalysis(result) {
 
   const runtimes = result.lines.map((line, index) => buildLineRuntime(line, index));
   assignRhymeLabels(runtimes);
+  const asonanteMixWarnings = computeAsonanteConsonantMixWarnings(runtimes);
+  for (const runtime of runtimes) {
+    runtime.rhyme.mixWarning = asonanteMixWarnings.get(runtime.lineIndex) ?? '';
+  }
   lastRuntime = runtimes;
   const rhymeSchemeValidation = validateRhymeScheme(runtimes, state.rhymeScheme, state.rhymeMode);
 
