@@ -94,6 +94,25 @@
             </details>
           </div>
         </details>
+
+        <div class="quick-controls" aria-label="Ajustes de lectura y vista">
+          <div class="quick-control-group">
+            <span class="quick-control-label">Tamaño de texto</span>
+            <button id="fontSizeDown" type="button" class="secondary compact-action" title="Reducir tamaño de texto">A-</button>
+            <input id="fontScaleControl" type="range" min="10" max="500" step="5" value="100" title="Ajusta el tamaño de texto en escritura y análisis." aria-label="Tamaño de texto" />
+            <button id="fontSizeUp" type="button" class="secondary compact-action" title="Aumentar tamaño de texto">A+</button>
+            <span id="fontScaleValue" class="quick-control-value">100%</span>
+          </div>
+
+          <div class="quick-control-group">
+            <label class="quick-control-label" for="panelViewMode">Vista</label>
+            <select id="panelViewMode" title="Elige qué panel quieres ver.">
+              <option value="both" selected>Escritura + análisis</option>
+              <option value="writing">Solo escritura</option>
+              <option value="analysis">Solo análisis</option>
+            </select>
+          </div>
+        </div>
       </section>
 
       <section class="workspace">

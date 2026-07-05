@@ -28,6 +28,14 @@ const exportPoemsMd = document.getElementById('exportPoemsMd');
 const importPoemsFile = document.getElementById('importPoemsFile');
 const analysisModeToggle = document.getElementById('analysisModeToggle');
 const analysisTextOutput = document.getElementById('analysisTextOutput');
+const fontScaleControl = document.getElementById('fontScaleControl');
+const fontScaleValue = document.getElementById('fontScaleValue');
+const fontSizeDown = document.getElementById('fontSizeDown');
+const fontSizeUp = document.getElementById('fontSizeUp');
+const panelViewMode = document.getElementById('panelViewMode');
+const workspace = document.querySelector('.workspace');
+const inputPanel = document.querySelector('.input-panel');
+const outputPanel = document.querySelector('.output-panel');
 
 const SAMPLE_POEM = `Silba la ciudad durmiente
 desde este séptimo piso.
@@ -44,6 +52,7 @@ const DEFAULT_SEXTINA_SCHEME = 'ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB DE 
 
 
 const LOCAL_POEM_MEMORY_KEY = 'escandador.poemMemory.v1';
+const LOCAL_UI_PREFERENCES_KEY = 'escandador.uiPreferences.v1';
 const AUTO_SAVE_DELAY_MS = 1200;
 
 const state = {
@@ -53,6 +62,8 @@ const state = {
   rhymeMode: 'asonante',
   rhymeScheme: '',
   analysisMode: 'visual',
+  panelViewMode: 'both',
+  fontScale: 100,
   sinalefaEnabled: true,
   conservativeSinalefa: true,
   sinalefaOverrides: {},
@@ -62,6 +73,107 @@ const state = {
 
 let lastRuntime = [];
 let autoSaveTimer = null;
+
+function clampFontScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 100;
+  }
+
+  return Math.max(5, Math.round(numeric / 5) * 5);
+}
+
+function loadUiPreferences() {
+  try {
+    const raw = localStorage.getItem(LOCAL_UI_PREFERENCES_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveUiPreferences() {
+  try {
+    localStorage.setItem(
+      LOCAL_UI_PREFERENCES_KEY,
+      JSON.stringify({
+        fontScale: state.fontScale,
+        panelViewMode: state.panelViewMode
+      })
+    );
+  } catch {
+    // Ignore storage errors to avoid blocking analysis.
+  }
+}
+
+function applyFontScale() {
+  const scale = clampFontScale(state.fontScale);
+  state.fontScale = scale;
+  document.documentElement.style.setProperty('--user-font-scale', String(scale / 100));
+
+  if (fontScaleControl) {
+    fontScaleControl.value = String(scale);
+  }
+
+  if (fontScaleValue) {
+    fontScaleValue.textContent = `${scale}%`;
+  }
+}
+
+function applyPanelViewMode() {
+  const validModes = new Set(['both', 'writing', 'analysis']);
+  if (!validModes.has(state.panelViewMode)) {
+    state.panelViewMode = 'both';
+  }
+
+  const writingOnly = state.panelViewMode === 'writing';
+  const analysisOnly = state.panelViewMode === 'analysis';
+
+  if (workspace) {
+    workspace.classList.toggle('view-writing-only', writingOnly);
+    workspace.classList.toggle('view-analysis-only', analysisOnly);
+  }
+
+  if (inputPanel) {
+    inputPanel.classList.toggle('hidden', analysisOnly);
+  }
+
+  if (outputPanel) {
+    outputPanel.classList.toggle('hidden', writingOnly);
+  }
+
+  if (panelViewMode) {
+    panelViewMode.value = state.panelViewMode;
+  }
+}
+
+function adjustFontScale(step) {
+  state.fontScale = clampFontScale(state.fontScale + step);
+  applyFontScale();
+  saveUiPreferences();
+}
+
+function initializeUiPreferences() {
+  const preferences = loadUiPreferences();
+  state.fontScale = clampFontScale(preferences.fontScale ?? state.fontScale);
+
+  const preferredPanelMode = String(preferences.panelViewMode ?? '').trim();
+  if (preferredPanelMode === 'writing' || preferredPanelMode === 'analysis' || preferredPanelMode === 'both') {
+    state.panelViewMode = preferredPanelMode;
+  }
+
+  applyFontScale();
+  applyPanelViewMode();
+}
 
 function normalizePoemTitle(value) {
   const title = String(value ?? '').trim();
@@ -2075,6 +2187,24 @@ analysisModeToggle?.addEventListener('click', () => {
   state.analysisMode = state.analysisMode === 'visual' ? 'text' : 'visual';
   applyAnalysisMode();
 });
+fontScaleControl?.addEventListener('input', () => {
+  state.fontScale = clampFontScale(fontScaleControl.value);
+  applyFontScale();
+  saveUiPreferences();
+});
+fontSizeDown?.addEventListener('click', () => {
+  adjustFontScale(-5);
+});
+fontSizeUp?.addEventListener('click', () => {
+  adjustFontScale(5);
+});
+panelViewMode?.addEventListener('change', () => {
+  state.panelViewMode = panelViewMode.value === 'writing' || panelViewMode.value === 'analysis'
+    ? panelViewMode.value
+    : 'both';
+  applyPanelViewMode();
+  saveUiPreferences();
+});
 savePoem?.addEventListener('click', saveCurrentPoemVersion);
 loadPoem?.addEventListener('click', loadSelectedPoemVersion);
 importPoemsMd?.addEventListener('click', () => {
@@ -2238,6 +2368,7 @@ analysisOutput.addEventListener(
 );
 
 updateAnalysis();
+initializeUiPreferences();
 refreshSavedPoemNameOptions(normalizePoemTitle(poemTitle?.value ?? ''));
 applyAnalysisMode();
 setPoemTitleDisplay(poemTitle?.value ?? '');
