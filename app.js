@@ -1107,12 +1107,15 @@ function computeAsonanteConsonantMixWarnings(runtimes) {
       byConsonantKey.get(consonantKey).push(runtime);
     }
 
-    const consonantSubgroups = [...byConsonantKey.values()].filter((items) => items.length >= 2);
-    if (!consonantSubgroups.length || byConsonantKey.size <= 1) {
+    // Warn only when at least two different consonant subgroups are repeated
+    // inside the same assonant family. A single repeated subgroup is a normal
+    // consonant coincidence and is already marked with "C".
+    const repeatedConsonantSubgroups = [...byConsonantKey.values()].filter((items) => items.length >= 2);
+    if (repeatedConsonantSubgroups.length < 2) {
       continue;
     }
 
-    for (const subgroup of consonantSubgroups) {
+    for (const subgroup of repeatedConsonantSubgroups) {
       for (const runtime of subgroup) {
         warningsByLine.set(
           runtime.lineIndex,
@@ -1123,6 +1126,53 @@ function computeAsonanteConsonantMixWarnings(runtimes) {
   }
 
   return warningsByLine;
+}
+
+function computeAsonanteConsonantMatches(runtimes) {
+  const matchesByLine = new Map();
+  if (state.rhymeMode !== 'asonante') {
+    return matchesByLine;
+  }
+
+  const verseRuntimes = runtimes.filter((runtime) => {
+    return runtime.lineAnalysis.text.trim() && runtime.rhyme.mode === 'asonante' && runtime.rhyme.assonantKey !== '-';
+  });
+
+  const byAsonantKey = new Map();
+  for (const runtime of verseRuntimes) {
+    const key = runtime.rhyme.assonantKey;
+    if (!byAsonantKey.has(key)) {
+      byAsonantKey.set(key, []);
+    }
+    byAsonantKey.get(key).push(runtime);
+  }
+
+  for (const group of byAsonantKey.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const byConsonantKey = new Map();
+    for (const runtime of group) {
+      const consonantKey = runtime.rhyme.consonantKey;
+      if (!byConsonantKey.has(consonantKey)) {
+        byConsonantKey.set(consonantKey, []);
+      }
+      byConsonantKey.get(consonantKey).push(runtime);
+    }
+
+    for (const subgroup of byConsonantKey.values()) {
+      if (subgroup.length < 2) {
+        continue;
+      }
+
+      for (const runtime of subgroup) {
+        matchesByLine.set(runtime.lineIndex, true);
+      }
+    }
+  }
+
+  return matchesByLine;
 }
 
 function getDisplayStressIndices(wordAnalysis) {
@@ -1776,10 +1826,12 @@ function renderRhyme(runtime) {
   const source = runtime.rhyme.manualLabel ? 'manual' : modeLabel;
   const label = String(runtime.rhyme.label ?? '').trim();
   const mixWarning = String(runtime.rhyme.mixWarning ?? '').trim();
+  const consonantMatchHint = String(runtime.rhyme.consonantMatchHint ?? '').trim();
   const colorIndex = label && label !== '-' ? (label.toUpperCase().charCodeAt(0) - 65) % 6 : 0;
   const colorClass = `rhyme-tone-${colorIndex}`;
   const warningHint = mixWarning ? `<span class="hover-hint" title="${escapeHtml(mixWarning)}">!</span>` : '';
-  return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>${warningHint}`;
+  const consonantHint = consonantMatchHint ? `<span class="hover-hint" title="${escapeHtml(consonantMatchHint)}">C</span>` : '';
+  return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>${consonantHint}${warningHint}`;
 }
 
 function formatWordInline(wordAnalysis) {
@@ -2018,8 +2070,12 @@ function renderAnalysis(result) {
   const runtimes = result.lines.map((line, index) => buildLineRuntime(line, index));
   assignRhymeLabels(runtimes);
   const asonanteMixWarnings = computeAsonanteConsonantMixWarnings(runtimes);
+  const asonanteConsonantMatches = computeAsonanteConsonantMatches(runtimes);
   for (const runtime of runtimes) {
     runtime.rhyme.mixWarning = asonanteMixWarnings.get(runtime.lineIndex) ?? '';
+    runtime.rhyme.consonantMatchHint = asonanteConsonantMatches.has(runtime.lineIndex)
+      ? 'Este verso coincide en rima consonante dentro de su serie asonante.'
+      : '';
   }
   lastRuntime = runtimes;
   const rhymeSchemeValidation = validateRhymeScheme(runtimes, state.rhymeScheme, state.rhymeMode);
