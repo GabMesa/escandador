@@ -920,6 +920,48 @@ button.secondary {
   text-decoration: underline;
 }
 
+.app-toast {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 20;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(53, 35, 18, 0.2);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(58, 37, 20, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.app-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.app-toast.is-success {
+  border-color: rgba(33, 161, 85, 0.3);
+  background: rgba(236, 252, 243, 0.98);
+  color: #1f7a35;
+}
+
+.app-toast.is-warning {
+  border-color: rgba(230, 184, 45, 0.44);
+  background: rgba(255, 248, 224, 0.98);
+  color: #8f6f18;
+}
+
+.app-toast.is-error {
+  border-color: rgba(214, 59, 72, 0.38);
+  background: rgba(255, 236, 239, 0.98);
+  color: #9f1f2b;
+}
+
 .line-meta {
   display: flex;
   justify-content: space-between;

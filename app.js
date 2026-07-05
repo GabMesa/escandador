@@ -73,6 +73,38 @@ const state = {
 
 let lastRuntime = [];
 let autoSaveTimer = null;
+let toastTimer = null;
+
+function ensureToastElement() {
+  let toast = document.getElementById('appToast');
+  if (toast) {
+    return toast;
+  }
+
+  toast = document.createElement('div');
+  toast.id = 'appToast';
+  toast.className = 'app-toast';
+  toast.setAttribute('role', 'status');
+  toast.setAttribute('aria-live', 'polite');
+  document.body.appendChild(toast);
+  return toast;
+}
+
+function showToast(message, type = 'info') {
+  const toast = ensureToastElement();
+  toast.textContent = String(message ?? '').trim();
+  toast.classList.remove('is-info', 'is-success', 'is-warning', 'is-error');
+  toast.classList.add(`is-${type}`);
+  toast.classList.add('is-visible');
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('is-visible');
+  }, 2200);
+}
 
 function clampFontScale(value) {
   const numeric = Number(value);
@@ -313,7 +345,9 @@ function buildCurrentSnapshot() {
       hemistichSplit: hemistichSplit.value,
       rhymeMode: rhymeMode?.value ?? 'asonante',
       rhymeScheme: rhymeScheme?.value ?? ''
-    }
+    },
+    sinalefaOverrides: state.sinalefaOverrides,
+    lineOverrides: state.lineOverrides
   };
 }
 
@@ -326,11 +360,18 @@ function getSnapshotSignature(snapshot) {
       hemistichSplit: String(snapshot.settings?.hemistichSplit ?? ''),
       rhymeMode: String(snapshot.settings?.rhymeMode ?? 'asonante'),
       rhymeScheme: String(snapshot.settings?.rhymeScheme ?? '')
-    }
+    },
+    sinalefaOverrides: snapshot.sinalefaOverrides ?? {},
+    lineOverrides: snapshot.lineOverrides ?? {}
   });
 }
 
-function saveCurrentPoemVersion() {
+function saveCurrentPoemVersion(options = {}) {
+  const {
+    notify = false,
+    notifyWhenUnchanged = false
+  } = options;
+
   const title = normalizePoemTitle(poemTitle?.value ?? '');
   if (poemTitle) {
     poemTitle.value = title;
@@ -348,11 +389,16 @@ function saveCurrentPoemVersion() {
   if (latest) {
     const latestSignature = getSnapshotSignature({
       poemText: latest.poemText,
-      settings: latest.settings
+      settings: latest.settings,
+      sinalefaOverrides: latest.sinalefaOverrides,
+      lineOverrides: latest.lineOverrides
     });
     if (latestSignature === nextSignature) {
       refreshSavedPoemNameOptions(title);
       refreshSavedPoemVersionOptions(title, String(latest.id ?? ''));
+      if (notify && notifyWhenUnchanged) {
+        showToast('Sin cambios para guardar.', 'warning');
+      }
       return false;
     }
   }
@@ -361,17 +407,25 @@ function saveCurrentPoemVersion() {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     savedAt: new Date().toISOString(),
     poemText: snapshot.poemText,
-    settings: snapshot.settings
+    settings: snapshot.settings,
+    sinalefaOverrides: snapshot.sinalefaOverrides,
+    lineOverrides: snapshot.lineOverrides
   };
 
   store.poems[title].push(version);
   const ok = savePoemMemoryStore(store);
   if (!ok) {
-    return;
+    if (notify) {
+      showToast('No se pudo guardar el poema.', 'error');
+    }
+    return false;
   }
 
   refreshSavedPoemNameOptions(title);
   refreshSavedPoemVersionOptions(title, version.id);
+  if (notify) {
+    showToast('Poema guardado.', 'success');
+  }
   return true;
 }
 
@@ -401,15 +455,22 @@ function loadSelectedPoemVersion() {
     stressCustom.value = String(selected.version.settings.stressCustom ?? stressCustom.value);
     hemistichSplit.value = String(selected.version.settings.hemistichSplit ?? hemistichSplit.value);
     if (rhymeMode) {
-      rhymeMode.value = selected.version.settings.rhymeMode === 'consonante' ? 'consonante' : 'asonante';
+      const savedRhymeMode = String(selected.version.settings.rhymeMode ?? 'asonante');
+      rhymeMode.value = savedRhymeMode === 'consonante' || savedRhymeMode === 'sextina'
+        ? savedRhymeMode
+        : 'asonante';
     }
     if (rhymeScheme) {
       rhymeScheme.value = String(selected.version.settings.rhymeScheme ?? rhymeScheme.value);
     }
   }
 
-  state.sinalefaOverrides = {};
-  state.lineOverrides = {};
+  state.sinalefaOverrides = selected.version.sinalefaOverrides && typeof selected.version.sinalefaOverrides === 'object'
+    ? { ...selected.version.sinalefaOverrides }
+    : {};
+  state.lineOverrides = selected.version.lineOverrides && typeof selected.version.lineOverrides === 'object'
+    ? { ...selected.version.lineOverrides }
+    : {};
   state.openAdvancedByLine = {};
   updateAnalysis();
 }
@@ -537,7 +598,8 @@ function importPoemsFromMarkdown(markdown) {
         stressPreset: stressPreset.value,
         stressCustom: stressCustom.value,
         hemistichSplit: hemistichSplit.value,
-        rhymeMode: rhymeMode?.value ?? 'asonante'
+        rhymeMode: rhymeMode?.value ?? 'asonante',
+        rhymeScheme: rhymeScheme?.value ?? ''
       }
     });
   }
@@ -2261,7 +2323,9 @@ panelViewMode?.addEventListener('change', () => {
   applyPanelViewMode();
   saveUiPreferences();
 });
-savePoem?.addEventListener('click', saveCurrentPoemVersion);
+savePoem?.addEventListener('click', () => {
+  saveCurrentPoemVersion({ notify: true, notifyWhenUnchanged: true });
+});
 loadPoem?.addEventListener('click', loadSelectedPoemVersion);
 importPoemsMd?.addEventListener('click', () => {
   importPoemsFile?.click();
@@ -2315,7 +2379,7 @@ document.addEventListener('keydown', (event) => {
   const key = String(event.key || '').toLowerCase();
   if (key === 's') {
     event.preventDefault();
-    saveCurrentPoemVersion();
+    saveCurrentPoemVersion({ notify: true, notifyWhenUnchanged: true });
     return;
   }
 
