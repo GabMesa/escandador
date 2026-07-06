@@ -126,6 +126,7 @@
             <button id="deletePoemEntry" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar todas las versiones del poema seleccionado">🗑</button>
             <label for="savedPoemVersion">Versión</label>
             <select id="savedPoemVersion" title="Selecciona una versión anterior del poema guardado."></select>
+            <button id="editPoemVersionLabel" type="button" class="secondary icon-action tiny-icon-action" title="Editar etiqueta de la versión seleccionada">🏷</button>
             <button id="deletePoemVersion" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar la versión seleccionada del historial">🗑</button>
           </div>
           <label class="sr-only" for="poemInput">Poema</label>
@@ -142,6 +143,31 @@
           <pre id="analysisTextOutput" class="analysis-text-output hidden" aria-live="polite"></pre>
         </article>
       </section>
+
+      <div id="versionManagerModal" class="version-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="versionManagerTitle">
+        <div class="version-modal-backdrop" data-close-modal="true"></div>
+        <div class="version-modal-content">
+          <div class="version-modal-header">
+            <h3 id="versionManagerTitle">Gestor de versiones</h3>
+            <button id="closeVersionManager" type="button" class="secondary icon-action" title="Cerrar">✕</button>
+          </div>
+
+          <div class="version-modal-body">
+            <div class="version-modal-actions">
+              <button id="selectAllVersions" type="button" class="secondary compact-action">Seleccionar todo</button>
+              <button id="deleteSelectedVersions" type="button" class="secondary compact-action">Borrar seleccionadas</button>
+            </div>
+
+            <label for="versionLabelInput">Etiqueta para la versión seleccionada</label>
+            <div class="version-label-row">
+              <input id="versionLabelInput" type="text" maxlength="48" placeholder="Ej: Borrador, Final, Revisión 2" />
+              <button id="applyVersionLabel" type="button" class="secondary compact-action">Aplicar etiqueta</button>
+            </div>
+
+            <div id="savedVersionsList" class="saved-versions-list" role="list"></div>
+          </div>
+        </div>
+      </div>
 
       <footer class="app-footer">De Mesa© para el <a href="https://discord.gg/mSz3ER2JKR" target="_blank" rel="noopener noreferrer">Busto de Paellas</a>.</footer>
     </main>

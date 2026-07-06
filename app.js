@@ -21,7 +21,16 @@ const savePoem = document.getElementById('savePoem');
 const loadPoem = document.getElementById('loadPoem');
 const savedPoemName = document.getElementById('savedPoemName');
 const savedPoemVersion = document.getElementById('savedPoemVersion');
+const openVersionManager = document.getElementById('openVersionManager');
+const editPoemVersionLabel = document.getElementById('editPoemVersionLabel');
 const deletePoemVersion = document.getElementById('deletePoemVersion');
+const deleteSelectedVersions = document.getElementById('deleteSelectedVersions');
+const savedVersionsList = document.getElementById('savedVersionsList');
+const versionManagerModal = document.getElementById('versionManagerModal');
+const closeVersionManager = document.getElementById('closeVersionManager');
+const selectAllVersions = document.getElementById('selectAllVersions');
+const versionLabelInput = document.getElementById('versionLabelInput');
+const applyVersionLabel = document.getElementById('applyVersionLabel');
 const deletePoemEntry = document.getElementById('deletePoemEntry');
 const importPoemsMd = document.getElementById('importPoemsMd');
 const exportPoemsMd = document.getElementById('exportPoemsMd');
@@ -66,6 +75,8 @@ const state = {
   fontScale: 100,
   sinalefaEnabled: true,
   conservativeSinalefa: true,
+  loadedVersionId: '',
+  loadedVersionTitle: '',
   sinalefaOverrides: {},
   lineOverrides: {},
   openAdvancedByLine: {}
@@ -74,6 +85,7 @@ const state = {
 let lastRuntime = [];
 let autoSaveTimer = null;
 let toastTimer = null;
+let selectedVersionIds = new Set();
 
 function ensureToastElement() {
   let toast = document.getElementById('appToast');
@@ -254,6 +266,190 @@ function formatVersionTimestamp(value) {
   return date.toLocaleString('es-ES');
 }
 
+function normalizeVersionLabel(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, 48);
+}
+
+function ensureVersionMetadata(versions) {
+  if (!Array.isArray(versions) || !versions.length) {
+    return false;
+  }
+
+  let changed = false;
+  let maxVersionNumber = 0;
+
+  for (const entry of versions) {
+    const number = Number(entry?.versionNumber);
+    if (Number.isInteger(number) && number > 0) {
+      maxVersionNumber = Math.max(maxVersionNumber, number);
+    }
+  }
+
+  const rankedByAge = [...versions].sort((a, b) => {
+    const left = new Date(a?.savedAt ?? 0).getTime();
+    const right = new Date(b?.savedAt ?? 0).getTime();
+    return left - right;
+  });
+
+  for (const entry of rankedByAge) {
+    const number = Number(entry?.versionNumber);
+    if (Number.isInteger(number) && number > 0) {
+      continue;
+    }
+
+    maxVersionNumber += 1;
+    entry.versionNumber = maxVersionNumber;
+    changed = true;
+  }
+
+  return changed;
+}
+
+function getNextVersionNumber(versions) {
+  let maxVersionNumber = 0;
+  for (const entry of versions) {
+    const number = Number(entry?.versionNumber);
+    if (Number.isInteger(number) && number > 0) {
+      maxVersionNumber = Math.max(maxVersionNumber, number);
+    }
+  }
+
+  return maxVersionNumber + 1;
+}
+
+function getVersionLabel(entry, index, total) {
+  const label = normalizeVersionLabel(entry?.label ?? '');
+  if (label) {
+    return label;
+  }
+
+  const versionNumber = Number(entry?.versionNumber);
+  if (Number.isInteger(versionNumber) && versionNumber > 0) {
+    return `Versión ${versionNumber}`;
+  }
+
+  return `Versión ${total - index}`;
+}
+
+function updateSelectAllButtonLabel(totalItems) {
+  if (!selectAllVersions) {
+    return;
+  }
+
+  const checked = selectedVersionIds.size;
+  selectAllVersions.textContent = totalItems > 0 && checked >= totalItems ? 'Deseleccionar todo' : 'Seleccionar todo';
+}
+
+function syncSelectedVersionLabelInput() {
+  if (!versionLabelInput) {
+    return;
+  }
+
+  const selected = getSelectedPoemVersionEntry();
+  versionLabelInput.value = selected ? normalizeVersionLabel(selected.version.label ?? '') : '';
+}
+
+function openVersionManagerModal({ focusLabel = false } = {}) {
+  if (!versionManagerModal) {
+    return;
+  }
+
+  versionManagerModal.classList.add('is-open');
+  versionManagerModal.setAttribute('aria-hidden', 'false');
+  renderSavedVersionList(savedPoemName?.value ?? '', savedPoemVersion?.value ?? '');
+  syncSelectedVersionLabelInput();
+
+  if (focusLabel && versionLabelInput) {
+    versionLabelInput.focus();
+    versionLabelInput.select();
+  }
+}
+
+function closeVersionManagerModal() {
+  if (!versionManagerModal) {
+    return;
+  }
+
+  versionManagerModal.classList.remove('is-open');
+  versionManagerModal.setAttribute('aria-hidden', 'true');
+}
+
+function renderSavedVersionList(title, preferredVersionId = '') {
+  if (!savedVersionsList) {
+    return;
+  }
+
+  const store = loadPoemMemoryStore();
+  const versions = Array.isArray(store.poems?.[title]) ? store.poems[title] : [];
+  const metadataChanged = ensureVersionMetadata(versions);
+  if (metadataChanged) {
+    savePoemMemoryStore(store);
+  }
+  const ranked = [...versions].sort((a, b) => {
+    const left = new Date(a.savedAt ?? 0).getTime();
+    const right = new Date(b.savedAt ?? 0).getTime();
+    return right - left;
+  });
+
+  savedVersionsList.innerHTML = '';
+  if (!title) {
+    selectedVersionIds = new Set();
+    updateSelectAllButtonLabel(0);
+    savedVersionsList.innerHTML = '<div class="saved-version-meta">Selecciona un poema para ver sus versiones.</div>';
+    return;
+  }
+
+  if (!ranked.length) {
+    selectedVersionIds = new Set();
+    updateSelectAllButtonLabel(0);
+    savedVersionsList.innerHTML = '<div class="saved-version-meta">No hay versiones para mostrar.</div>';
+    return;
+  }
+
+  const validIds = new Set(ranked.map((entry) => String(entry.id ?? '')));
+  selectedVersionIds = new Set([...selectedVersionIds].filter((id) => validIds.has(id)));
+
+  ranked.forEach((entry, index) => {
+    const item = document.createElement('label');
+    item.className = 'saved-version-item';
+    item.setAttribute('role', 'listitem');
+    if (String(entry.id ?? '') === preferredVersionId) {
+      item.classList.add('is-active');
+    }
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'saved-version-checkbox';
+    checkbox.value = String(entry.id ?? '');
+    checkbox.checked = selectedVersionIds.has(checkbox.value);
+
+    const text = document.createElement('span');
+    text.className = 'saved-version-text';
+
+    const main = document.createElement('span');
+    main.className = 'saved-version-main';
+
+    const label = document.createElement('span');
+    label.className = 'saved-version-label';
+    label.textContent = getVersionLabel(entry, index, ranked.length);
+
+    const kind = document.createElement('span');
+    kind.className = 'saved-version-kind';
+    kind.textContent = entry.kind === 'autosave' ? 'Auto' : 'Manual';
+
+    const meta = document.createElement('span');
+    meta.className = 'saved-version-meta';
+    meta.textContent = formatVersionTimestamp(entry.savedAt);
+
+    main.append(label, kind);
+    text.append(main, meta);
+    item.append(checkbox, text);
+    savedVersionsList.appendChild(item);
+  });
+
+  updateSelectAllButtonLabel(ranked.length);
+}
+
 function refreshSavedPoemVersionOptions(title, preferredVersionId = '') {
   if (!savedPoemVersion) {
     return;
@@ -261,6 +457,10 @@ function refreshSavedPoemVersionOptions(title, preferredVersionId = '') {
 
   const store = loadPoemMemoryStore();
   const versions = Array.isArray(store.poems?.[title]) ? store.poems[title] : [];
+  const metadataChanged = ensureVersionMetadata(versions);
+  if (metadataChanged) {
+    savePoemMemoryStore(store);
+  }
   const ranked = [...versions].sort((a, b) => {
     const left = new Date(a.savedAt ?? 0).getTime();
     const right = new Date(b.savedAt ?? 0).getTime();
@@ -271,13 +471,14 @@ function refreshSavedPoemVersionOptions(title, preferredVersionId = '') {
   if (!ranked.length) {
     savedPoemVersion.innerHTML = '<option value="">Sin versiones</option>';
     savedPoemVersion.disabled = true;
+    renderSavedVersionList(title, preferredVersionId);
     return;
   }
 
   ranked.forEach((entry, index) => {
     const option = document.createElement('option');
     option.value = String(entry.id ?? '');
-    option.textContent = `v${ranked.length - index} - ${formatVersionTimestamp(entry.savedAt)}`;
+    option.textContent = `${getVersionLabel(entry, index, ranked.length)} · ${formatVersionTimestamp(entry.savedAt)}`;
     savedPoemVersion.appendChild(option);
   });
 
@@ -285,6 +486,8 @@ function refreshSavedPoemVersionOptions(title, preferredVersionId = '') {
   if (preferredVersionId && ranked.some((item) => String(item.id) === preferredVersionId)) {
     savedPoemVersion.value = preferredVersionId;
   }
+
+  renderSavedVersionList(title, preferredVersionId);
 }
 
 function refreshSavedPoemNameOptions(preferredTitle = '') {
@@ -366,11 +569,41 @@ function getSnapshotSignature(snapshot) {
   });
 }
 
+function getVersionSnapshotSignature(entry) {
+  return getSnapshotSignature({
+    poemText: entry?.poemText,
+    settings: entry?.settings,
+    sinalefaOverrides: entry?.sinalefaOverrides,
+    lineOverrides: entry?.lineOverrides
+  });
+}
+
+function isCurrentDraftDirtyAgainstLoadedVersion() {
+  const loadedTitle = String(state.loadedVersionTitle ?? '').trim();
+  const loadedVersionId = String(state.loadedVersionId ?? '').trim();
+  if (!loadedTitle || !loadedVersionId) {
+    return false;
+  }
+
+  const store = loadPoemMemoryStore();
+  const versions = Array.isArray(store.poems?.[loadedTitle]) ? store.poems[loadedTitle] : [];
+  const loadedEntry = versions.find((entry) => String(entry.id ?? '') === loadedVersionId);
+  if (!loadedEntry) {
+    return false;
+  }
+
+  const loadedSignature = getVersionSnapshotSignature(loadedEntry);
+  const currentSignature = getSnapshotSignature(buildCurrentSnapshot());
+  return loadedSignature !== currentSignature;
+}
+
 function saveCurrentPoemVersion(options = {}) {
   const {
     notify = false,
-    notifyWhenUnchanged = false
+    notifyWhenUnchanged = false,
+    kind = 'manual'
   } = options;
+  const saveKind = kind === 'autosave' ? 'autosave' : 'manual';
 
   const title = normalizePoemTitle(poemTitle?.value ?? '');
   if (poemTitle) {
@@ -382,10 +615,24 @@ function saveCurrentPoemVersion(options = {}) {
   if (!Array.isArray(store.poems[title])) {
     store.poems[title] = [];
   }
+  ensureVersionMetadata(store.poems[title]);
+  const nextVersionNumber = getNextVersionNumber(store.poems[title]);
 
   const snapshot = buildCurrentSnapshot();
   const latest = store.poems[title].at(-1);
   const nextSignature = getSnapshotSignature(snapshot);
+  const nextVersion = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    savedAt: new Date().toISOString(),
+    poemText: snapshot.poemText,
+    settings: snapshot.settings,
+    sinalefaOverrides: snapshot.sinalefaOverrides,
+    lineOverrides: snapshot.lineOverrides,
+    kind: saveKind,
+    label: '',
+    versionNumber: nextVersionNumber
+  };
+
   if (latest) {
     const latestSignature = getSnapshotSignature({
       poemText: latest.poemText,
@@ -393,26 +640,34 @@ function saveCurrentPoemVersion(options = {}) {
       sinalefaOverrides: latest.sinalefaOverrides,
       lineOverrides: latest.lineOverrides
     });
-    if (latestSignature === nextSignature) {
+    const latestKind = String(latest.kind ?? 'manual');
+    const latestWasAutosave = latestKind === 'autosave';
+    const shouldReplaceLatest = latestWasAutosave && (saveKind === 'autosave' || saveKind === 'manual');
+
+    if (shouldReplaceLatest) {
+      const preservedVersionNumber = Number.isInteger(Number(latest.versionNumber)) && Number(latest.versionNumber) > 0
+        ? Number(latest.versionNumber)
+        : nextVersionNumber;
+      store.poems[title][store.poems[title].length - 1] = {
+        ...latest,
+        ...nextVersion,
+        versionNumber: preservedVersionNumber,
+        label: normalizeVersionLabel(latest.label ?? '')
+      };
+    } else if (latestSignature === nextSignature && latestKind === saveKind) {
       refreshSavedPoemNameOptions(title);
       refreshSavedPoemVersionOptions(title, String(latest.id ?? ''));
       if (notify && notifyWhenUnchanged) {
         showToast('Sin cambios para guardar.', 'warning');
       }
       return false;
+    } else {
+      store.poems[title].push(nextVersion);
     }
+  } else {
+    store.poems[title].push(nextVersion);
   }
 
-  const version = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    savedAt: new Date().toISOString(),
-    poemText: snapshot.poemText,
-    settings: snapshot.settings,
-    sinalefaOverrides: snapshot.sinalefaOverrides,
-    lineOverrides: snapshot.lineOverrides
-  };
-
-  store.poems[title].push(version);
   const ok = savePoemMemoryStore(store);
   if (!ok) {
     if (notify) {
@@ -422,11 +677,115 @@ function saveCurrentPoemVersion(options = {}) {
   }
 
   refreshSavedPoemNameOptions(title);
-  refreshSavedPoemVersionOptions(title, version.id);
+  refreshSavedPoemVersionOptions(title, nextVersion.id);
   if (notify) {
     showToast('Poema guardado.', 'success');
   }
   return true;
+}
+
+function getSelectedPoemVersionEntry() {
+  const selectedTitle = savedPoemName?.value ?? '';
+  const selectedVersionId = savedPoemVersion?.value ?? '';
+  if (!selectedTitle || !selectedVersionId) {
+    return null;
+  }
+
+  const store = loadPoemMemoryStore();
+  const versions = Array.isArray(store.poems?.[selectedTitle]) ? store.poems[selectedTitle] : [];
+  const versionIndex = versions.findIndex((entry) => String(entry.id ?? '') === selectedVersionId);
+  if (versionIndex < 0) {
+    return null;
+  }
+
+  return {
+    title: selectedTitle,
+    versionIndex,
+    version: versions[versionIndex]
+  };
+}
+
+function updateSelectedVersionLabel() {
+  const selected = getSelectedPoemVersionEntry();
+  if (!selected) {
+    showToast('Selecciona una versión para etiquetarla.', 'warning');
+    return;
+  }
+
+  const nextLabel = normalizeVersionLabel(versionLabelInput?.value ?? selected.version.label ?? '');
+  const currentLabel = normalizeVersionLabel(selected.version.label ?? '');
+  if (nextLabel === currentLabel) {
+    return;
+  }
+
+  const store = loadPoemMemoryStore();
+  const versions = Array.isArray(store.poems?.[selected.title]) ? store.poems[selected.title] : [];
+  if (!versions[selected.versionIndex]) {
+    return;
+  }
+
+  versions[selected.versionIndex] = {
+    ...versions[selected.versionIndex],
+    label: nextLabel
+  };
+
+  if (!savePoemMemoryStore(store)) {
+    showToast('No se pudo cambiar la etiqueta.', 'error');
+    return;
+  }
+
+  refreshSavedPoemNameOptions(selected.title);
+  refreshSavedPoemVersionOptions(selected.title, selected.version.id);
+  syncSelectedVersionLabelInput();
+  showToast(nextLabel ? 'Etiqueta actualizada.' : 'Etiqueta quitada.', 'success');
+}
+
+function getCheckedVersionIds() {
+  return [...selectedVersionIds];
+}
+
+function deleteSelectedPoemVersions() {
+  const selectedTitle = savedPoemName?.value ?? '';
+  const checkedIds = getCheckedVersionIds();
+  if (!selectedTitle || !checkedIds.length) {
+    return;
+  }
+
+  const store = loadPoemMemoryStore();
+  const versions = Array.isArray(store.poems?.[selectedTitle]) ? store.poems[selectedTitle] : [];
+  const selectedCount = versions.filter((entry) => checkedIds.includes(String(entry.id ?? ''))).length;
+  if (!selectedCount) {
+    return;
+  }
+
+  const shouldDelete = window.confirm(`¿Eliminar ${selectedCount} versión${selectedCount === 1 ? '' : 'es'} del poema "${selectedTitle}"?`);
+  if (!shouldDelete) {
+    return;
+  }
+
+  const remaining = versions.filter((entry) => !checkedIds.includes(String(entry.id ?? '')));
+  if (remaining.length) {
+    store.poems[selectedTitle] = remaining;
+  } else {
+    delete store.poems[selectedTitle];
+  }
+
+  if (!savePoemMemoryStore(store)) {
+    showToast('No se pudieron borrar las versiones.', 'error');
+    return;
+  }
+
+  refreshSavedPoemNameOptions(selectedTitle);
+  if (store.poems[selectedTitle]?.length) {
+    refreshSavedPoemVersionOptions(selectedTitle);
+    loadSelectedPoemVersion();
+  }
+
+  selectedVersionIds = new Set();
+  renderSavedVersionList(savedPoemName?.value ?? '', savedPoemVersion?.value ?? '');
+  syncSelectedVersionLabelInput();
+
+  showToast(`${selectedCount} versión${selectedCount === 1 ? '' : 'es'} borrada${selectedCount === 1 ? '' : 's'}.`, 'success');
 }
 
 function scheduleAutoSave() {
@@ -435,7 +794,7 @@ function scheduleAutoSave() {
   }
 
   autoSaveTimer = setTimeout(() => {
-    saveCurrentPoemVersion();
+    saveCurrentPoemVersion({ kind: 'autosave' });
   }, AUTO_SAVE_DELAY_MS);
 }
 
@@ -471,8 +830,11 @@ function loadSelectedPoemVersion() {
   state.lineOverrides = selected.version.lineOverrides && typeof selected.version.lineOverrides === 'object'
     ? { ...selected.version.lineOverrides }
     : {};
+  state.loadedVersionTitle = selected.title;
+  state.loadedVersionId = String(selected.version.id ?? '');
   state.openAdvancedByLine = {};
   updateAnalysis();
+  refreshSavedPoemVersionOptions(selected.title, selected.version.id);
 }
 
 function deleteSelectedPoemVersion() {
@@ -590,6 +952,9 @@ function importPoemsFromMarkdown(markdown) {
       store.poems[entry.title] = [];
     }
 
+    ensureVersionMetadata(store.poems[entry.title]);
+    const nextVersionNumber = getNextVersionNumber(store.poems[entry.title]);
+
     store.poems[entry.title].push({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       savedAt: new Date().toISOString(),
@@ -600,7 +965,12 @@ function importPoemsFromMarkdown(markdown) {
         hemistichSplit: hemistichSplit.value,
         rhymeMode: rhymeMode?.value ?? 'asonante',
         rhymeScheme: rhymeScheme?.value ?? ''
-      }
+      },
+      sinalefaOverrides: {},
+      lineOverrides: {},
+      kind: 'manual',
+      label: '',
+      versionNumber: nextVersionNumber
     });
   }
 
@@ -1782,6 +2152,10 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
     }
 
     const countLabel = segmentCounts.length > 1 ? segmentCounts.join('+') : String(adjustPoeticCount(effectiveRawCount, lineAnalysis.accentType));
+    const metricVerseCount = segmentCounts.length > 1 ? null : adjustPoeticCount(effectiveRawCount, lineAnalysis.accentType);
+    const hemistichWarning = !hasHemistich && Number.isFinite(metricVerseCount) && metricVerseCount > 11
+      ? `Verso de ${metricVerseCount} sílabas métricas sin hemistiquio.`
+      : '';
 
     return {
       entries,
@@ -1792,7 +2166,8 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
       effectivePatternWithNatural,
       versalConflictPositions,
       versalConflictBoundaryIndices,
-      countLabel
+      countLabel,
+      hemistichWarning
     };
   }
 
@@ -1843,6 +2218,7 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
     segments: metricState.segments,
     naturalStress: metricState.naturalStress,
     countLabel: metricState.countLabel,
+    hemistichWarning: metricState.hemistichWarning,
     rhyme: {
       mode,
       consonantKey: rhymeData.consonantKey,
@@ -2164,7 +2540,7 @@ function renderAnalysis(result) {
                   <div class="analysis-col rhyme-col">${renderRhyme(runtime)}</div>
                   <div class="analysis-col scheme-col">${renderRhymeSchemeStatus(runtime, rhymeSchemeValidation)}</div>
                   <div class="analysis-col advanced-col">${renderLineAdvanced(runtime)}</div>
-                  <div class="analysis-col count-col">${runtime.countLabel}</div>
+                  <div class="analysis-col count-col">${runtime.countLabel}${runtime.hemistichWarning ? ` <span class="hover-hint" title="${escapeHtml(runtime.hemistichWarning)}">!</span>` : ''}</div>
                 </div>
               </div>
             `;
@@ -2323,6 +2699,9 @@ panelViewMode?.addEventListener('change', () => {
   applyPanelViewMode();
   saveUiPreferences();
 });
+openVersionManager?.addEventListener('click', () => {
+  openVersionManagerModal();
+});
 savePoem?.addEventListener('click', () => {
   saveCurrentPoemVersion({ notify: true, notifyWhenUnchanged: true });
 });
@@ -2349,16 +2728,21 @@ poemTitle?.addEventListener('input', () => {
 });
 savedPoemName?.addEventListener('change', () => {
   const targetTitle = savedPoemName.value;
-  saveCurrentPoemVersion();
+  if (isCurrentDraftDirtyAgainstLoadedVersion()) {
+    saveCurrentPoemVersion({ kind: 'manual' });
+  }
   refreshSavedPoemNameOptions(targetTitle);
   savedPoemName.value = targetTitle;
   refreshSavedPoemVersionOptions(targetTitle);
   loadSelectedPoemVersion();
+  syncSelectedVersionLabelInput();
 });
 savedPoemVersion?.addEventListener('change', () => {
   const targetTitle = savedPoemName?.value ?? '';
   const targetVersion = savedPoemVersion?.value ?? '';
-  saveCurrentPoemVersion();
+  if (isCurrentDraftDirtyAgainstLoadedVersion()) {
+    saveCurrentPoemVersion({ kind: 'manual' });
+  }
   if (targetTitle) {
     refreshSavedPoemNameOptions(targetTitle);
     savedPoemName.value = targetTitle;
@@ -2368,10 +2752,66 @@ savedPoemVersion?.addEventListener('change', () => {
     }
   }
   loadSelectedPoemVersion();
+  syncSelectedVersionLabelInput();
+});
+editPoemVersionLabel?.addEventListener('click', () => {
+  openVersionManagerModal({ focusLabel: true });
 });
 deletePoemVersion?.addEventListener('click', deleteSelectedPoemVersion);
+deleteSelectedVersions?.addEventListener('click', deleteSelectedPoemVersions);
+selectAllVersions?.addEventListener('click', () => {
+  const checkboxes = savedVersionsList ? [...savedVersionsList.querySelectorAll('.saved-version-checkbox')] : [];
+  const allIds = checkboxes
+    .map((checkbox) => String(checkbox.value ?? ''))
+    .filter(Boolean);
+
+  if (!allIds.length) {
+    return;
+  }
+
+  const allSelected = selectedVersionIds.size >= allIds.length;
+  selectedVersionIds = allSelected ? new Set() : new Set(allIds);
+  renderSavedVersionList(savedPoemName?.value ?? '', savedPoemVersion?.value ?? '');
+});
+applyVersionLabel?.addEventListener('click', updateSelectedVersionLabel);
+versionLabelInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    updateSelectedVersionLabel();
+  }
+});
+savedVersionsList?.addEventListener('change', (event) => {
+  const checkbox = event.target;
+  if (!(checkbox instanceof HTMLInputElement) || !checkbox.classList.contains('saved-version-checkbox')) {
+    return;
+  }
+
+  const id = String(checkbox.value ?? '');
+  if (!id) {
+    return;
+  }
+
+  if (checkbox.checked) {
+    selectedVersionIds.add(id);
+  } else {
+    selectedVersionIds.delete(id);
+  }
+
+  updateSelectAllButtonLabel((savedVersionsList?.querySelectorAll('.saved-version-checkbox').length) ?? 0);
+});
+closeVersionManager?.addEventListener('click', closeVersionManagerModal);
+versionManagerModal?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement && target.dataset.closeModal === 'true') {
+    closeVersionManagerModal();
+  }
+});
 deletePoemEntry?.addEventListener('click', deleteSelectedPoemEntry);
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && versionManagerModal?.classList.contains('is-open')) {
+    closeVersionManagerModal();
+  }
+
   if (!(event.ctrlKey || event.metaKey)) {
     return;
   }
