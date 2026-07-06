@@ -55,6 +55,18 @@ function isLetter(ch) {
   return /[a-záéíóúüñ]/i.test(ch);
 }
 
+function normalizeBasicVowel(ch) {
+  return String(ch ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function isEorI(ch) {
+  const normalized = normalizeBasicVowel(ch);
+  return normalized === 'e' || normalized === 'i';
+}
+
 function isVowelLike(ch, index, word) {
   const lower = ch.toLowerCase();
 
@@ -79,8 +91,8 @@ function isSilentU(word, index) {
   }
 
   const previous = word[index - 1]?.toLowerCase();
-  const next = word[index + 1]?.toLowerCase();
-  return (previous === 'g' || previous === 'q') && (next === 'e' || next === 'i');
+  const next = word[index + 1];
+  return (previous === 'g' || previous === 'q') && isEorI(next);
 }
 
 function hasWrittenAccent(ch) {
@@ -146,7 +158,7 @@ function tokenizeConsonantUnits(text, nextVowelChar) {
       continue;
     }
 
-    if ((pair === 'qu' || pair === 'gu') && (nextVowelChar === 'e' || nextVowelChar === 'i')) {
+    if ((pair === 'qu' || pair === 'gu') && isEorI(nextVowelChar)) {
       units.push({ text: text.slice(index, index + 2), rawLength: 2 });
       index += 2;
       continue;

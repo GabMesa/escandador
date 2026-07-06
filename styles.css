@@ -790,7 +790,7 @@ button.secondary {
 .analysis-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content max-content max-content max-content max-content max-content;
+  grid-template-columns: max-content minmax(0, 1fr) max-content max-content max-content max-content max-content;
   gap: 4px;
   align-items: start;
   padding: 2px 0 4px;
@@ -802,6 +802,16 @@ button.secondary {
 
 .analysis-col {
   min-width: 0;
+}
+
+.verse-index-col {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  min-width: 2ch;
+  text-align: right;
+  align-self: start;
+  padding-top: 0.12rem;
 }
 
 .visual-col {
@@ -915,6 +925,15 @@ button.secondary {
   font-size: 0.64rem;
   font-weight: 800;
   cursor: help;
+}
+
+.jump-to-verse {
+  cursor: pointer;
+}
+
+.jump-to-verse:focus-visible {
+  outline: 1px solid rgba(49, 92, 102, 0.6);
+  outline-offset: 1px;
 }
 
 
@@ -1392,6 +1411,11 @@ button.secondary {
 
   .analysis-col {
     width: auto;
+  }
+
+  .verse-index-col {
+    min-width: 2.4ch;
+    font-size: 0.78rem;
   }
 
   .visual-col {

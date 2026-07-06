@@ -57,7 +57,7 @@ que indican un nuevo día.
 Sueñan, quizás, que la vida
 es más estrellas que alarmas. `;
 
-const DEFAULT_SEXTINA_SCHEME = 'ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB DE CF';
+const DEFAULT_SEXTINA_SCHEME = 'ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB CD EF';
 
 
 const LOCAL_POEM_MEMORY_KEY = 'escandador.poemMemory.v1';
@@ -1169,6 +1169,50 @@ function restoreInlineInputFocus(snapshot) {
   }
 }
 
+function getLineStartOffsetInText(text, targetLineIndex) {
+  const source = String(text ?? '');
+  if (!Number.isInteger(targetLineIndex) || targetLineIndex <= 0) {
+    return 0;
+  }
+
+  let lineIndex = 0;
+  for (let cursor = 0; cursor < source.length; cursor += 1) {
+    const current = source[cursor];
+    if (current === '\r') {
+      if (source[cursor + 1] === '\n') {
+        cursor += 1;
+      }
+      lineIndex += 1;
+      if (lineIndex === targetLineIndex) {
+        return cursor + 1;
+      }
+      continue;
+    }
+
+    if (current === '\n') {
+      lineIndex += 1;
+      if (lineIndex === targetLineIndex) {
+        return cursor + 1;
+      }
+    }
+  }
+
+  return source.length;
+}
+
+function focusPoemLine(lineIndex) {
+  if (!poemInput || !Number.isInteger(lineIndex) || lineIndex < 0) {
+    return;
+  }
+
+  const offset = getLineStartOffsetInText(poemInput.value, lineIndex);
+  poemInput.focus();
+  poemInput.setSelectionRange(offset, offset);
+
+  const lineHeight = Number.parseFloat(window.getComputedStyle(poemInput).lineHeight) || 18;
+  poemInput.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight * 1.5);
+}
+
 function normalizeRhymeChunk(value) {
   return String(value ?? '')
     .toLowerCase()
@@ -1269,8 +1313,34 @@ function normalizeRhymeScheme(value) {
     .replace(/[^A-Z]/g, '');
 }
 
+function normalizeRhymeApostrophes(value) {
+  return String(value ?? '').replace(/[´`’‘]/g, "'");
+}
+
+function parseRhymeSchemeToken(token) {
+  const normalized = normalizeRhymeApostrophes(String(token ?? '').trim().toUpperCase());
+  if (!normalized) {
+    return { isFree: false, letter: '', requiresAguda: false };
+  }
+
+  if (normalized === '-') {
+    return { isFree: true, letter: '-', requiresAguda: false };
+  }
+
+  const letter = normalized[0];
+  if (!/[A-Z]/.test(letter)) {
+    return { isFree: false, letter: '', requiresAguda: false };
+  }
+
+  return {
+    isFree: false,
+    letter,
+    requiresAguda: normalized.includes("'")
+  };
+}
+
 function tokenizeRhymeScheme(value, mode = state.rhymeMode) {
-  const raw = String(value ?? '').trim().toUpperCase();
+  const raw = normalizeRhymeApostrophes(String(value ?? '').trim().toUpperCase());
   if (!raw) {
     return [];
   }
@@ -1291,7 +1361,30 @@ function tokenizeRhymeScheme(value, mode = state.rhymeMode) {
     return tokens;
   }
 
-  return normalizeRhymeScheme(raw).split('').filter(Boolean);
+  const tokens = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const current = raw[index];
+
+    if (current === '-') {
+      tokens.push('-');
+      continue;
+    }
+
+    if (!/[A-Z]/.test(current)) {
+      continue;
+    }
+
+    const next = raw[index + 1] ?? '';
+    if (next === "'") {
+      tokens.push(`${current}'`);
+      index += 1;
+      continue;
+    }
+
+    tokens.push(current);
+  }
+
+  return tokens;
 }
 
 function markRhymeSchemeFailure(lineStatus, runtime, reason) {
@@ -1385,12 +1478,27 @@ function validateRhymeScheme(runtimes, schemeValue, mode = state.rhymeMode) {
 
   for (let index = 0; index < checkedRuntimes.length; index += 1) {
     const runtime = checkedRuntimes[index];
-    const expectedLetter = tokens[index];
+    const expectedToken = tokens[index];
+    const tokenMeta = parseRhymeSchemeToken(expectedToken);
     const actualKey = normalizeValidationWord(runtime.rhyme?.activeKey ?? '');
     const current = lineStatus.get(runtime.lineIndex) ?? { valid: true, reasons: [] };
-    current.expectedLetter = expectedLetter;
+    current.expectedLetter = expectedToken;
     current.verseNumber = index + 1;
     lineStatus.set(runtime.lineIndex, current);
+
+    if (tokenMeta.isFree) {
+      continue;
+    }
+
+    if (tokenMeta.requiresAguda && runtime.lineAnalysis?.accentType !== 'aguda') {
+      markRhymeSchemeFailure(lineStatus, runtime, `La letra ${tokenMeta.letter}' exige final aguda.`);
+    }
+
+    const expectedLetter = tokenMeta.letter;
+    if (!expectedLetter) {
+      markRhymeSchemeFailure(lineStatus, runtime, `Token de rima inválido: ${expectedToken}.`);
+      continue;
+    }
 
     if (!actualKey) {
       markRhymeSchemeFailure(lineStatus, runtime, 'No hay rima definida para este verso.');
@@ -1419,7 +1527,7 @@ function validateRhymeScheme(runtimes, schemeValue, mode = state.rhymeMode) {
     .filter(({ runtime }) => lineStatus.get(runtime.lineIndex)?.valid === false)
     .map(({ verseNumber }) => verseNumber);
 
-  const checkedLabel = checkedCount < verseRuntimes.length || checkedCount < scheme.length
+  const checkedLabel = checkedCount < verseRuntimes.length || checkedCount < tokens.length
     ? ` (v. 1-${checkedCount})`
     : '';
 
@@ -1443,10 +1551,11 @@ function renderRhymeSchemeStatus(runtime, rhymeSchemeValidation) {
   }
 
   const expectedLetter = status.expectedLetter || '';
-  const classes = ['scheme-chip', status.valid ? 'is-valid' : 'is-invalid'].join(' ');
+  const classes = ['scheme-chip', status.valid ? 'is-valid' : 'is-invalid', status.valid ? '' : 'jump-to-verse'].filter(Boolean).join(' ');
   const suffix = status.valid ? '✓' : '✕';
   const title = status.reasons.length ? status.reasons.join(' · ') : `Cumple el esquema ${rhymeSchemeValidation.scheme}.`;
-  return `<span class="${classes}" title="${escapeHtml(title)}">${escapeHtml(expectedLetter)} ${suffix}</span>`;
+  const jumpAttrs = status.valid ? '' : ` role="button" tabindex="0" data-jump-line="${runtime.lineIndex}"`;
+  return `<span class="${classes}" title="${escapeHtml(title)}"${jumpAttrs}>${escapeHtml(expectedLetter)} ${suffix}</span>`;
 }
 
 function getManualRhymeKey(lineIndex) {
@@ -2267,7 +2376,7 @@ function renderRhyme(runtime) {
   const consonantMatchHint = String(runtime.rhyme.consonantMatchHint ?? '').trim();
   const colorIndex = label && label !== '-' ? (label.toUpperCase().charCodeAt(0) - 65) % 6 : 0;
   const colorClass = `rhyme-tone-${colorIndex}`;
-  const warningHint = mixWarning ? `<span class="hover-hint" title="${escapeHtml(mixWarning)}">!</span>` : '';
+  const warningHint = mixWarning ? `<span class="hover-hint jump-to-verse" role="button" tabindex="0" data-jump-line="${runtime.lineIndex}" title="${escapeHtml(mixWarning)}">!</span>` : '';
   const consonantHint = consonantMatchHint ? `<span class="hover-hint" title="${escapeHtml(consonantMatchHint)}">C</span>` : '';
   return `<span class="rhyme-chip ${colorClass}" title="Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.">${escapeHtml(runtime.rhyme.label)}</span>${consonantHint}${warningHint}`;
 }
@@ -2455,7 +2564,7 @@ function renderInvalidHemistich(runtime) {
   }
 
   return runtime.invalidHemistich
-    .map((item) => `<span class="invalid-hemi" title="Hemistiquio ${item.target}: ${escapeHtml(item.reason)}">H${item.target}!</span>`)
+    .map((item) => `<span class="invalid-hemi jump-to-verse" role="button" tabindex="0" data-jump-line="${runtime.lineIndex}" title="Hemistiquio ${item.target}: ${escapeHtml(item.reason)}">H${item.target}!</span>`)
     .join(' ');
 }
 
@@ -2506,6 +2615,15 @@ function renderAnalysis(result) {
   }
 
   const runtimes = result.lines.map((line, index) => buildLineRuntime(line, index));
+  let verseCounter = 0;
+  for (const runtime of runtimes) {
+    if (runtime.lineAnalysis.text.trim()) {
+      verseCounter += 1;
+      runtime.verseNumber = verseCounter;
+    } else {
+      runtime.verseNumber = 0;
+    }
+  }
   assignRhymeLabels(runtimes);
   const asonanteMixWarnings = computeAsonanteConsonantMixWarnings(runtimes);
   const asonanteConsonantMatches = computeAsonanteConsonantMatches(runtimes);
@@ -2535,12 +2653,13 @@ function renderAnalysis(result) {
             return `
               <div class="analysis-line-wrap">
                 <div class="analysis-row">
+                  <div class="analysis-col verse-index-col">${runtime.verseNumber}</div>
                   <div class="analysis-col visual-col">${renderAnnotatedLine(runtime)}</div>
-                  <div class="analysis-col stress-col">${renderPositionTrack(runtime)} ${renderInvalidHemistich(runtime)}${runtime.sinalefaNotice ? `<span class="hover-hint" title="${escapeHtml(runtime.sinalefaNotice)}">!</span>` : ''}</div>
+                  <div class="analysis-col stress-col">${renderPositionTrack(runtime)} ${renderInvalidHemistich(runtime)}${runtime.sinalefaNotice ? `<span class="hover-hint jump-to-verse" role="button" tabindex="0" data-jump-line="${runtime.lineIndex}" title="${escapeHtml(runtime.sinalefaNotice)}">!</span>` : ''}</div>
                   <div class="analysis-col rhyme-col">${renderRhyme(runtime)}</div>
                   <div class="analysis-col scheme-col">${renderRhymeSchemeStatus(runtime, rhymeSchemeValidation)}</div>
                   <div class="analysis-col advanced-col">${renderLineAdvanced(runtime)}</div>
-                  <div class="analysis-col count-col">${runtime.countLabel}${runtime.hemistichWarning ? ` <span class="hover-hint" title="${escapeHtml(runtime.hemistichWarning)}">!</span>` : ''}</div>
+                  <div class="analysis-col count-col">${runtime.countLabel}${runtime.hemistichWarning ? ` <span class="hover-hint jump-to-verse" role="button" tabindex="0" data-jump-line="${runtime.lineIndex}" title="${escapeHtml(runtime.hemistichWarning)}">!</span>` : ''}</div>
                 </div>
               </div>
             `;
@@ -2834,6 +2953,15 @@ sinalefaEnabled.addEventListener('click', () => {
 });
 
 analysisOutput.addEventListener('click', (event) => {
+  const jumpTarget = event.target?.closest?.('.jump-to-verse');
+  if (jumpTarget) {
+    const line = Number(jumpTarget.dataset.jumpLine);
+    if (Number.isInteger(line) && line >= 0) {
+      focusPoemLine(line);
+    }
+    return;
+  }
+
   const target = event.target.closest('.sinalefa-toggle');
   if (!target || target.disabled) {
     return;
@@ -2853,6 +2981,23 @@ analysisOutput.addEventListener('click', (event) => {
   const key = `${line}:${boundary}`;
   state.sinalefaOverrides[key] = !boundaryData.active;
   updateAnalysis();
+});
+
+analysisOutput.addEventListener('keydown', (event) => {
+  const target = event.target?.closest?.('.jump-to-verse');
+  if (!target) {
+    return;
+  }
+
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return;
+  }
+
+  event.preventDefault();
+  const line = Number(target.dataset.jumpLine);
+  if (Number.isInteger(line) && line >= 0) {
+    focusPoemLine(line);
+  }
 });
 
 analysisOutput.addEventListener('input', (event) => {
