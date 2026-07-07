@@ -65,6 +65,8 @@ const selectedLookupWord = document.getElementById('selectedLookupWord');
 const lookupRaeBtn = document.getElementById('lookupRaeBtn');
 const lookupRimasBtn = document.getElementById('lookupRimasBtn');
 const lookupResults = document.getElementById('lookupResults');
+const lookupExcludeCurrentBtn = document.getElementById('lookupExcludeCurrentBtn');
+const lookupExcludedBar = document.getElementById('lookupExcludedBar');
 const workspace = document.querySelector('.workspace');
 const inputPanel = document.querySelector('.input-panel');
 const outputPanel = document.querySelector('.output-panel');
@@ -134,6 +136,7 @@ const state = {
   lookupRhymeCandidates: [],
   lookupMode: 'asonante',
   lookupSyllableFilter: 'all',
+  lookupExcludedWords: [],
   lookupLoadingDefinition: false,
   lookupLoadingRhymes: false,
   lookupError: '',
@@ -820,6 +823,11 @@ function refreshLookupBar() {
     lookupRaeBtn.title = 'Definición en actualización automática';
   }
 
+  if (lookupExcludeCurrentBtn) {
+    lookupExcludeCurrentBtn.hidden = !isAsonanteRhymeMode();
+  }
+
+  renderLookupExcludedBar();
   renderLookupResults();
 }
 
@@ -1084,14 +1092,28 @@ function extractIedraCandidatesFromSource(sourceText, targetWord) {
   return words;
 }
 
-function filterRhymesByMode(targetWord, candidates, mode, syllableFilter = 'all') {
+function filterRhymesByMode(targetWord, candidates, mode, syllableFilter = 'all', excludedComparables = null, excludedConsonantKeys = null) {
   const targetData = extractWordRhymeData(targetWord);
   const filtered = [];
   const seen = new Set();
   const syllableTarget = syllableFilter === 'all' ? -1 : Number(syllableFilter);
 
   for (const candidate of candidates) {
+    const candidateComparable = normalizeLookupComparable(candidate);
+    if (excludedComparables && excludedComparables.has(candidateComparable)) {
+      continue;
+    }
+
     const candidateData = extractWordRhymeData(candidate);
+
+    if (
+      excludedConsonantKeys
+      && candidateData.consonantKey !== '-'
+      && excludedConsonantKeys.has(candidateData.consonantKey)
+    ) {
+      continue;
+    }
+
     const candidateAnalysis = analyzeWord(candidate);
     const syllableCount = Array.isArray(candidateAnalysis?.syllables) ? candidateAnalysis.syllables.length : 0;
     const passesSyllableFilter = syllableTarget <= 0
@@ -1140,12 +1162,97 @@ function recomputeLookupRhymes() {
       : 'asonante';
 
   state.lookupMode = mode;
+  const excludedComparables = new Set(
+    state.lookupExcludedWords.map((word) => normalizeLookupComparable(word)).filter(Boolean)
+  );
+  const excludedConsonantKeys = new Set(
+    state.lookupExcludedWords
+      .map((word) => extractWordRhymeData(word).consonantKey)
+      .filter((key) => key && key !== '-')
+  );
   state.lookupRhymes = filterRhymesByMode(
     state.selectedLookupWord,
     state.lookupRhymeCandidates,
     mode,
-    state.lookupSyllableFilter
+    state.lookupSyllableFilter,
+    excludedComparables,
+    excludedConsonantKeys
   );
+}
+
+function isAsonanteRhymeMode() {
+  return rhymeMode?.value !== 'consonante' && rhymeMode?.value !== 'sextina';
+}
+
+function renderLookupExcludedBar() {
+  if (!lookupExcludedBar) {
+    return;
+  }
+
+  if (!isAsonanteRhymeMode() || !state.lookupExcludedWords.length) {
+    lookupExcludedBar.innerHTML = '';
+    return;
+  }
+
+  const chips = state.lookupExcludedWords
+    .map((word) => `
+      <span class="lookup-excluded-chip">
+        ${escapeHtml(word)}
+        <button type="button" class="lookup-excluded-chip-remove" data-action="remove-lookup-excluded-word" data-word="${escapeHtml(word)}" title="Quitar '${escapeHtml(word)}' de la lista de evitadas" aria-label="Quitar '${escapeHtml(word)}' de la lista de evitadas">×</button>
+      </span>
+    `)
+    .join('');
+
+  lookupExcludedBar.innerHTML = `
+    <span class="quick-control-label">No repetir</span>
+    ${chips}
+    <button type="button" id="lookupExcludeClearBtn" data-action="clear-lookup-excluded-words" title="Vaciar la lista de palabras evitadas">Vaciar</button>
+  `;
+}
+
+function addLookupExcludedWord(rawWord) {
+  const trimmed = String(rawWord ?? '').trim();
+  const comparable = normalizeLookupComparable(trimmed);
+  if (!comparable) {
+    return;
+  }
+
+  const alreadyExcluded = state.lookupExcludedWords.some(
+    (word) => normalizeLookupComparable(word) === comparable
+  );
+  if (alreadyExcluded) {
+    return;
+  }
+
+  state.lookupExcludedWords = [...state.lookupExcludedWords, trimmed];
+  recomputeLookupRhymes();
+  renderLookupExcludedBar();
+  renderLookupResults();
+}
+
+function removeLookupExcludedWord(rawWord) {
+  const comparable = normalizeLookupComparable(rawWord);
+  if (!comparable) {
+    return;
+  }
+
+  state.lookupExcludedWords = state.lookupExcludedWords.filter(
+    (word) => normalizeLookupComparable(word) !== comparable
+  );
+  recomputeLookupRhymes();
+  renderLookupExcludedBar();
+  renderLookupResults();
+}
+
+function clearLookupExcludedWords() {
+  if (!state.lookupExcludedWords.length) {
+    return;
+  }
+
+  state.lookupExcludedWords = [];
+  recomputeLookupRhymes();
+  renderLookupExcludedBar();
+  renderLookupResults();
 }
 
 function buildLookupSyllableFilterOptions(selectedValue = 'all') {
@@ -1188,8 +1295,16 @@ function renderLookupResults() {
   const rhymesText = state.lookupLoadingRhymes
     ? '<li>Cargando rimas de Iedra...</li>'
     : state.lookupRhymes.length
-      ? state.lookupRhymes.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
+      ? state.lookupRhymes
+          .map((item) => `
+            <li>
+              <span class="lookup-rhyme-word">${escapeHtml(item)}</span>
+              ${isAsonanteRhymeMode() ? `<button type="button" class="lookup-rhyme-use-btn" data-action="add-lookup-excluded-word" data-word="${escapeHtml(item)}" title="Marcar '${escapeHtml(item)}' como ya usada para que no se repita" aria-label="Marcar '${escapeHtml(item)}' como ya usada">x</button>` : ''}
+            </li>
+          `)
+          .join('')
       : '<li>Las rimas se descargan y filtran automáticamente según configuración y sílabas.</li>';
+
 
   const loaderVisible = state.lookupLoadingDefinition || state.lookupLoadingRhymes;
   const loaderBlock = loaderVisible
@@ -3439,9 +3554,38 @@ function focusPoemLine(lineIndex) {
   poemInput.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight * 1.5);
 }
 
+function stripSilentQGU(value) {
+  // "qu"/"gu" before e/i is a silent u (que, qui, gue, gui). A written ü
+  // (güe, güi) is a distinct character and is intentionally left untouched
+  // because that u is actually pronounced.
+  return String(value ?? '').replace(/([gq])u(?=[eéií])/gi, '$1');
+}
+
+function findFirstSoundingVowelIndex(text) {
+  const chars = String(text ?? '');
+  for (let index = 0; index < chars.length; index += 1) {
+    const ch = chars[index];
+    if (!/[aeiouáéíóúü]/i.test(ch)) {
+      continue;
+    }
+
+    if (ch.toLowerCase() === 'u') {
+      const previous = chars[index - 1]?.toLowerCase();
+      const next = chars[index + 1]?.toLowerCase();
+      const nextIsEorI = next === 'e' || next === 'i' || next === 'é' || next === 'í';
+      if ((previous === 'g' || previous === 'q') && nextIsEorI) {
+        continue;
+      }
+    }
+
+    return index;
+  }
+
+  return -1;
+}
+
 function normalizeRhymeChunk(value) {
-  return String(value ?? '')
-    .toLowerCase()
+  return stripSilentQGU(String(value ?? '').toLowerCase())
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/y/g, 'i')
@@ -3550,7 +3694,7 @@ function extractRhymeData(lineAnalysis) {
     .slice(0, lastWord.stressIndex)
     .reduce((total, syllable) => total + String(syllable).length, 0);
   const stressSyllable = String(lastWord.syllables[lastWord.stressIndex] ?? '');
-  const vowelOffset = stressSyllable.search(/[aeiouáéíóúü]/i);
+  const vowelOffset = findFirstSoundingVowelIndex(stressSyllable);
   const start = stressStart + (vowelOffset >= 0 ? vowelOffset : 0);
   const rawTail = normalizedWord.slice(start);
   const consonantKey = getCanonicalConsonantRhymeKey(rawTail, lastWord);
@@ -5228,6 +5372,38 @@ lookupResults?.addEventListener('change', (event) => {
 
   if (state.selectedLookupWord && !state.lookupRhymeCandidates.length) {
     queueLookupAutoFetch();
+  }
+});
+lookupResults?.addEventListener('click', (event) => {
+  const target = event.target instanceof HTMLElement ? event.target.closest('[data-action]') : null;
+  if (!target) {
+    return;
+  }
+
+  const action = target.getAttribute('data-action');
+
+  if (action === 'add-lookup-excluded-word') {
+    addLookupExcludedWord(target.getAttribute('data-word') ?? '');
+  }
+});
+lookupExcludeCurrentBtn?.addEventListener('click', () => {
+  addLookupExcludedWord(selectedLookupWord?.value ?? state.selectedLookupWord ?? '');
+});
+lookupExcludedBar?.addEventListener('click', (event) => {
+  const target = event.target instanceof HTMLElement ? event.target.closest('[data-action]') : null;
+  if (!target) {
+    return;
+  }
+
+  const action = target.getAttribute('data-action');
+
+  if (action === 'remove-lookup-excluded-word') {
+    removeLookupExcludedWord(target.getAttribute('data-word') ?? '');
+    return;
+  }
+
+  if (action === 'clear-lookup-excluded-words') {
+    clearLookupExcludedWords();
   }
 });
 selectedLookupWord?.addEventListener('keydown', (event) => {
