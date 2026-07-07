@@ -2836,6 +2836,66 @@ function getAssonantVowelFromSyllable(syllable) {
   return vowels[vowels.length - 1];
 }
 
+function buildConsonantRhymeCandidates(rawTail, lastWord) {
+  const strictKey = normalizeRhymeChunk(rawTail);
+  if (!strictKey) {
+    return ['-'];
+  }
+
+  const candidates = new Set([strictKey]);
+
+  // Poetic license: in rhyme zone, weak vowels in diphthongs may be omitted.
+  const withoutRisingWeak = strictKey.replace(/(^|[^aeiou])([iu])([aeo])/g, '$1$3');
+  if (withoutRisingWeak && withoutRisingWeak !== strictKey) {
+    candidates.add(withoutRisingWeak);
+  }
+
+  const withoutFallingWeak = strictKey.replace(/([aeo])([iu])(?=[^aeiou]|$)/g, '$1');
+  if (withoutFallingWeak && withoutFallingWeak !== strictKey) {
+    candidates.add(withoutFallingWeak);
+  }
+
+  // Poetic license: for esdrujula/sobreesdrujula endings, the post-tonic
+  // syllable can be ignored for rhyme purposes.
+  const accentType = String(lastWord?.accentType ?? '');
+  const stressedTailSyllables = Array.isArray(lastWord?.syllables)
+    ? lastWord.syllables.slice(lastWord.stressIndex)
+    : [];
+  if ((accentType === 'esdrújula' || accentType === 'sobreesdrújula') && stressedTailSyllables.length >= 3) {
+    const contractedTail = `${stressedTailSyllables[0]}${stressedTailSyllables.slice(2).join('')}`;
+    const contractedKey = normalizeRhymeChunk(contractedTail);
+    if (contractedKey) {
+      candidates.add(contractedKey);
+      const contractedWithoutRisingWeak = contractedKey.replace(/(^|[^aeiou])([iu])([aeo])/g, '$1$3');
+      if (contractedWithoutRisingWeak) {
+        candidates.add(contractedWithoutRisingWeak);
+      }
+      const contractedWithoutFallingWeak = contractedKey.replace(/([aeo])([iu])(?=[^aeiou]|$)/g, '$1');
+      if (contractedWithoutFallingWeak) {
+        candidates.add(contractedWithoutFallingWeak);
+      }
+    }
+  }
+
+  return [...candidates].filter(Boolean);
+}
+
+function getCanonicalConsonantRhymeKey(rawTail, lastWord) {
+  const candidates = buildConsonantRhymeCandidates(rawTail, lastWord);
+  if (!candidates.length) {
+    return '-';
+  }
+
+  const sorted = [...candidates].sort((left, right) => {
+    if (left.length !== right.length) {
+      return left.length - right.length;
+    }
+    return left.localeCompare(right);
+  });
+
+  return sorted[0] || '-';
+}
+
 function extractRhymeData(lineAnalysis) {
   const lastWord = lineAnalysis.analyses.at(-1);
   if (!lastWord || !lastWord.syllables.length) {
@@ -2862,7 +2922,7 @@ function extractRhymeData(lineAnalysis) {
   const vowelOffset = stressSyllable.search(/[aeiouáéíóúü]/i);
   const start = stressStart + (vowelOffset >= 0 ? vowelOffset : 0);
   const rawTail = normalizedWord.slice(start);
-  const consonantKey = normalizeRhymeChunk(rawTail) || '-';
+  const consonantKey = getCanonicalConsonantRhymeKey(rawTail, lastWord);
   const stressedTailSyllables = lastWord.syllables.slice(lastWord.stressIndex);
   const assonantKey = stressedTailSyllables
     .map(getAssonantVowelFromSyllable)
