@@ -146,10 +146,22 @@ const state = {
   lookupExcludedWords: [],
   lookupLoadingDefinition: false,
   lookupLoadingRhymes: false,
+  lookupLoadingWordTypes: false,
   lookupError: '',
   lookupDefinitionRequestId: 0,
-  lookupRhymeRequestId: 0
+  lookupRhymeRequestId: 0,
+  lookupRhymePage: 1,
+  lookupRhymePageSize: 24,
+  lookupWordTypeFilter: 'all',
+  lookupWordTypeRequestId: 0,
+  lookupWordTypeScanComplete: true,
+  lookupVisibleWordTypes: {}
 };
+
+const LOOKUP_RHYME_PAGE_SIZE = 24;
+const LOOKUP_WORD_TYPE_CACHE_KEY = 'escandador.lookupWordTypeCache.v1';
+const LOOKUP_WORD_TYPE_BATCH_CONCURRENCY = 4;
+const LOOKUP_WORD_TYPE_SCAN_BATCH_SIZE = 24;
 
 let lastRuntime = [];
 let autoSaveTimer = null;
@@ -157,6 +169,8 @@ let toastTimer = null;
 let selectedVersionIds = new Set();
 let lookupAutoFetchTimer = null;
 let lookupProxyPreferences = loadLookupProxyPreferences();
+let lookupWordTypeCache = loadLookupWordTypeCache();
+state.lookupVisibleWordTypes = lookupWordTypeCache;
 let openSynonymsIndex = null;
 let openSynonymsIndexPromise = null;
 let openFrequencyIndex = null;
@@ -183,6 +197,28 @@ function saveLookupProxyPreferences() {
     localStorage.setItem(LOCAL_LOOKUP_PROXY_PREFS_KEY, JSON.stringify(lookupProxyPreferences));
   } catch {
     // Ignore storage errors to avoid blocking lookups.
+  }
+}
+
+function loadLookupWordTypeCache() {
+  try {
+    const raw = localStorage.getItem(LOOKUP_WORD_TYPE_CACHE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLookupWordTypeCache() {
+  try {
+    localStorage.setItem(LOOKUP_WORD_TYPE_CACHE_KEY, JSON.stringify(lookupWordTypeCache));
+  } catch {
+    // Ignore storage failures; classification can still run without persistence.
   }
 }
 
@@ -1006,6 +1042,18 @@ function buildLookupProxyUrls(targetUrl) {
 async function fetchLookupSourceText(targetUrl) {
   const errors = [];
 
+  const decodeSourceBuffer = async (response) => {
+    const buffer = await response.arrayBuffer();
+    const utf8Text = new TextDecoder('utf-8').decode(buffer);
+    const windowsText = new TextDecoder('windows-1252').decode(buffer);
+    const utf8ReplacementCount = (utf8Text.match(/\uFFFD/g) || []).length;
+    const windowsReplacementCount = (windowsText.match(/\uFFFD/g) || []).length;
+    if (windowsReplacementCount < utf8ReplacementCount) {
+      return windowsText;
+    }
+    return utf8Text;
+  };
+
   try {
     const directResponse = await fetch(targetUrl, {
       headers: {
@@ -1014,7 +1062,7 @@ async function fetchLookupSourceText(targetUrl) {
     });
 
     if (directResponse.ok) {
-      const directText = await directResponse.text();
+      const directText = await decodeSourceBuffer(directResponse);
       if (directText && directText.length > 120) {
         return directText;
       }
@@ -1047,7 +1095,7 @@ async function fetchLookupSourceText(targetUrl) {
         continue;
       }
 
-      const text = await response.text();
+      const text = await decodeSourceBuffer(response);
       if (text && text.length > 120) {
         setPreferredLookupProxy(targetUrl, proxyPrefix);
         return text;
@@ -1603,6 +1651,177 @@ function recomputeLookupRhymes() {
   );
 }
 
+function getLookupRhymePageState() {
+  const filteredRhymes = filterRhymesByWordType(state.lookupRhymes, state.lookupWordTypeFilter);
+  const total = Array.isArray(filteredRhymes) ? filteredRhymes.length : 0;
+  const pageSize = Math.max(6, Number(state.lookupRhymePageSize) || LOOKUP_RHYME_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(1, Number(state.lookupRhymePage) || 1), totalPages);
+  const start = (currentPage - 1) * pageSize;
+
+  return {
+    total,
+    pageSize,
+    totalPages,
+    currentPage,
+    items: total > 0 ? filteredRhymes.slice(start, start + pageSize) : []
+  };
+}
+
+function setLookupRhymePage(pageNumber) {
+  const { totalPages } = getLookupRhymePageState();
+  const normalized = Math.min(Math.max(1, Number(pageNumber) || 1), totalPages);
+  if (normalized === state.lookupRhymePage) {
+    return;
+  }
+
+  state.lookupRhymePage = normalized;
+  renderLookupResults();
+}
+
+function getLookupWordTypeForWord(word) {
+  const comparable = normalizeLookupComparable(word);
+  if (!comparable) {
+    return '';
+  }
+
+  return String(lookupWordTypeCache?.[comparable] ?? state.lookupVisibleWordTypes?.[comparable] ?? '');
+}
+
+function filterRhymesByWordType(words, wordTypeFilter) {
+  const normalizedFilter = String(wordTypeFilter ?? 'all');
+  if (normalizedFilter === 'all') {
+    return [...words];
+  }
+
+  return words.filter((word) => getLookupWordTypeForWord(word) === normalizedFilter);
+}
+
+async function refreshLookupVisibleWordTypes() {
+  if (state.lookupWordTypeFilter === 'all' || !state.selectedLookupWord) {
+    return;
+  }
+
+  try {
+    await startLookupWordTypeScan();
+  } finally {
+    renderLookupResults();
+  }
+}
+
+function getLookupTypeScanPages() {
+  const pageSize = LOOKUP_WORD_TYPE_SCAN_BATCH_SIZE;
+  const total = Array.isArray(state.lookupRhymeCandidates) ? state.lookupRhymeCandidates.length : 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return { pageSize, total, totalPages };
+}
+
+function getLookupWordsForPage(pageNumber) {
+  const { pageSize } = getLookupTypeScanPages();
+  const safePage = Math.max(1, Number(pageNumber) || 1);
+  const start = (safePage - 1) * pageSize;
+  return Array.isArray(state.lookupRhymeCandidates)
+    ? state.lookupRhymeCandidates.slice(start, start + pageSize)
+    : [];
+}
+
+function applyLookupWordTypeCache(entries) {
+  let changed = false;
+  for (const [key, value] of entries) {
+    if (!key) {
+      continue;
+    }
+
+    const cachedValue = value || '-';
+
+    if (lookupWordTypeCache[key] !== cachedValue) {
+      lookupWordTypeCache[key] = cachedValue;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    state.lookupVisibleWordTypes = lookupWordTypeCache;
+    saveLookupWordTypeCache();
+  }
+  return changed;
+}
+
+async function classifyLookupWordsByType(words, requestId) {
+  const uniqueWords = [...new Set((Array.isArray(words) ? words : [])
+    .map((word) => String(word ?? '').trim())
+    .filter(Boolean))];
+
+  const pendingWords = uniqueWords.filter((word) => {
+    const comparable = normalizeLookupComparable(word);
+    return comparable && lookupWordTypeCache[comparable] === undefined;
+  });
+
+  if (!pendingWords.length) {
+    return;
+  }
+
+  for (let index = 0; index < pendingWords.length; index += LOOKUP_WORD_TYPE_BATCH_CONCURRENCY) {
+    if (requestId !== state.lookupWordTypeRequestId) {
+      return;
+    }
+
+    const chunk = pendingWords.slice(index, index + LOOKUP_WORD_TYPE_BATCH_CONCURRENCY);
+    const results = await Promise.allSettled(chunk.map(async (word) => {
+      const extract = await fetchWiktionaryExtractText(word);
+      const wordType = parseWiktionaryWordTypeFromSource(extract) || '';
+      return [normalizeLookupComparable(word), wordType];
+    }));
+
+    if (requestId !== state.lookupWordTypeRequestId) {
+      return;
+    }
+
+    applyLookupWordTypeCache(results
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value)
+      .filter(([key]) => key));
+
+    renderLookupResults();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+async function startLookupWordTypeScan() {
+  if (state.lookupWordTypeFilter === 'all' || !state.selectedLookupWord) {
+    state.lookupLoadingWordTypes = false;
+    state.lookupWordTypeScanComplete = true;
+    renderLookupResults();
+    return;
+  }
+
+  const requestId = state.lookupWordTypeRequestId + 1;
+  state.lookupWordTypeRequestId = requestId;
+  state.lookupLoadingWordTypes = true;
+  state.lookupWordTypeScanComplete = false;
+  renderLookupResults();
+
+  try {
+    const { totalPages } = getLookupTypeScanPages();
+    for (let page = 1; page <= totalPages; page += 1) {
+      if (requestId !== state.lookupWordTypeRequestId) {
+        return;
+      }
+
+      await classifyLookupWordsByType(getLookupWordsForPage(page), requestId);
+      if (requestId !== state.lookupWordTypeRequestId) {
+        return;
+      }
+    }
+  } finally {
+    if (requestId === state.lookupWordTypeRequestId) {
+      state.lookupLoadingWordTypes = false;
+      state.lookupWordTypeScanComplete = true;
+      renderLookupResults();
+    }
+  }
+}
+
 function isAsonanteRhymeMode() {
   return rhymeMode?.value !== 'consonante' && rhymeMode?.value !== 'sextina';
 }
@@ -1689,6 +1908,95 @@ function buildLookupSyllableFilterOptions(selectedValue = 'all') {
     .join('');
 }
 
+function buildLookupPageSizeOptions(selectedValue = 24) {
+  const values = [12, 24, 36, 48, 72, 96];
+  return values
+    .map((value) => {
+      const selected = Number(selectedValue) === value ? ' selected' : '';
+      return `<option value="${value}"${selected}>${value}</option>`;
+    })
+    .join('');
+}
+
+function buildLookupWordTypeOptions(selectedValue = 'all') {
+  const values = [
+    ['all', 'Todos'],
+    ['sustantivo', 'Sustantivo'],
+    ['verbo', 'Verbo'],
+    ['adjetivo', 'Adjetivo'],
+    ['adverbio', 'Adverbio'],
+    ['pronombre', 'Pronombre'],
+    ['determinante', 'Determinante'],
+    ['numeral', 'Numeral'],
+    ['preposición', 'Preposición'],
+    ['conjunción', 'Conjunción'],
+    ['interjección', 'Interjección'],
+    ['locución', 'Locución']
+  ];
+
+  return values
+    .map(([value, label]) => {
+      const selected = String(selectedValue) === value ? ' selected' : '';
+      return `<option value="${value}"${selected}>${label}</option>`;
+    })
+    .join('');
+}
+
+function normalizeWiktionaryWordType(value) {
+  const text = cleanMarkdownText(String(value ?? '')).toLowerCase();
+  if (!text) {
+    return '';
+  }
+
+  if (text.startsWith('sustantivo')) return 'sustantivo';
+  if (text.startsWith('verbo')) return 'verbo';
+  if (text.startsWith('adjetivo')) return 'adjetivo';
+  if (text.startsWith('adverbio')) return 'adverbio';
+  if (text.startsWith('pronombre')) return 'pronombre';
+  if (text.startsWith('determinante')) return 'determinante';
+  if (text.startsWith('numeral')) return 'numeral';
+  if (text.startsWith('preposición')) return 'preposición';
+  if (text.startsWith('conjunción')) return 'conjunción';
+  if (text.startsWith('interjección')) return 'interjección';
+  if (text.startsWith('artículo')) return 'determinante';
+  if (text.startsWith('locución')) return 'locución';
+  return '';
+}
+
+function normalizeLookupWordTypeValue(value) {
+  const normalized = normalizeWiktionaryWordType(value);
+  if (normalized) {
+    return normalized;
+  }
+
+  const text = cleanMarkdownText(String(value ?? '')).toLowerCase();
+  if (text.includes('forma verbal')) return 'verbo';
+  return '';
+}
+
+function parseWiktionaryWordTypeFromSource(sourceText) {
+  const section = extractSpanishWiktionarySection(sourceText) || String(sourceText ?? '');
+  const lines = section
+    .split(/\r?\n/)
+    .map((line) => String(line ?? '').trim())
+    .filter(Boolean);
+
+  for (const rawLine of lines) {
+    const headingMatch = rawLine.match(/^=+\s*([^=]+?)\s*=+$/);
+    const candidate = cleanMarkdownText(headingMatch ? headingMatch[1] : rawLine);
+    const wordType = normalizeLookupWordTypeValue(candidate);
+    if (wordType) {
+      return wordType;
+    }
+
+    if (/^forma verbal\b/i.test(candidate)) {
+      return 'verbo';
+    }
+  }
+
+  return '';
+}
+
 function isProxyFailureError(message) {
   const text = String(message ?? '').toLowerCase();
   return text.includes('proxies configurados') || text.includes('proxy');
@@ -1741,8 +2049,16 @@ function renderLookupResults() {
     : '';
 
   const mode = rhymeMode?.value === 'consonante' ? 'consonante' : rhymeMode?.value === 'sextina' ? 'sextina' : 'asonante';
+  const rhymePageState = getLookupRhymePageState();
+  const syllableFilterOptions = buildLookupSyllableFilterOptions(state.lookupSyllableFilter);
+  const pageSizeOptions = buildLookupPageSizeOptions(state.lookupRhymePageSize);
+  const wordTypeFilterOptions = buildLookupWordTypeOptions(state.lookupWordTypeFilter);
+  const visibleRhymeItems = rhymePageState.items;
+  const rhymeCountLabel = state.lookupWordTypeFilter !== 'all' && !state.lookupWordTypeScanComplete
+    ? '?'
+    : String(rhymePageState.total);
 
-  const filteredList = state.lookupRhymes && state.lookupRhymes.length > 0 ? state.lookupRhymes
+  const filteredList = visibleRhymeItems.length > 0 ? visibleRhymeItems
     .map((item) => `
       <li>
         <span>${escapeHtml(item)}</span>
@@ -1750,6 +2066,45 @@ function renderLookupResults() {
       </li>
     `)
     .join('') : '<li>No se encontraron rimas con los filtros actuales y el corpus abierto cargado.</li>';
+
+  const rhymePagination = rhymePageState.total > 0
+    ? `
+      <div class="">
+      <div class="lookup-rhyme-pagination">
+        <label class="lookup-rhyme-pagination-size">
+          <span>Por página</span>
+          <select id="lookupRhymePageSize">
+            ${pageSizeOptions}
+          </select>
+        </label>
+        </div>
+        <div class="lookup-rhyme-pagination">
+        <button type="button" data-action="lookup-rhyme-page-prev" ${rhymePageState.currentPage <= 1 ? 'disabled' : ''}>Anterior</button>
+        <span>Página <input id="lookupRhymePageInput" type="number" min="1" value="${rhymePageState.currentPage}" inputmode="numeric" /> · ${rhymeCountLabel} rimas</span>
+        <button type="button" data-action="lookup-rhyme-page-next" ${rhymePageState.currentPage >= rhymePageState.totalPages ? 'disabled' : ''}>Siguiente</button>
+        </div>
+      </div>
+    `
+    : '';
+  const rhymeControls = `
+    <div class="lookup-rhyme-controls">
+      <label class="lookup-rhyme-control">
+        <span>Tipo</span>
+        <select id="lookupWordTypeFilter">
+          ${wordTypeFilterOptions}
+        </select>
+      </label>
+      <label class="lookup-rhyme-control">
+        <span>Sílabas</span>
+        <select id="lookupSyllableFilter">
+          ${syllableFilterOptions}
+        </select>
+      </label>
+    </div>
+  `;
+  const typeLoadingNotice = state.lookupLoadingWordTypes
+    ? '<p class="lookup-loader" style="margin-top: 0.35rem;"><span class="lookup-spinner" aria-hidden="true"></span>Clasificando por páginas y guardando caché desde Wikcionario...</p>'
+    : '';
 
   const loaderVisible = state.lookupLoadingDefinition || state.lookupLoadingRhymes;
   const loaderBlock = loaderVisible ? '<p class="lookup-loader"><span class="lookup-spinner" aria-hidden="true"></span>Cargando información desde las fuentes...</p>' : '';
@@ -1777,6 +2132,9 @@ function renderLookupResults() {
       <summary class="lookup-section" style="cursor: pointer; list-style: max-content; margin-top: 1rem;">
         <strong>Rimas filtradas (${mode})</strong>
       </summary>
+      ${rhymeControls}
+      ${typeLoadingNotice}
+      ${rhymePagination}
       <ul class="lookup-rhyme-list" style="margin-top: 0.5rem;">
         ${filteredList}
       </ul>
@@ -1868,7 +2226,12 @@ async function openOpenDataRhymesFromConfig() {
   state.lookupRhymeRequestId = requestId;
   state.lookupError = '';
   state.lookupLoadingRhymes = true;
+  state.lookupWordTypeRequestId += 1;
+  state.lookupLoadingWordTypes = false;
   state.lookupMode = configuredRhymeMode;
+  state.lookupRhymePage = 1;
+  state.lookupVisibleWordTypes = lookupWordTypeCache;
+  state.lookupWordTypeScanComplete = state.lookupWordTypeFilter === 'all';
   renderLookupResults();
 
   try {
@@ -1882,6 +2245,8 @@ async function openOpenDataRhymesFromConfig() {
 
     if (!state.lookupRhymes.length) {
       state.lookupError = `No se encontraron rimas ${configuredRhymeMode} con el corpus abierto cargado.`;
+    } else if (state.lookupWordTypeFilter !== 'all') {
+      startLookupWordTypeScan();
     }
   } catch (error) {
     if (requestId !== state.lookupRhymeRequestId) {
@@ -1896,8 +2261,8 @@ async function openOpenDataRhymesFromConfig() {
   }
 }
 
-const MD_LOGO_ICON = '<img src="https://www.docstomarkdown.pro/logo-48.png" alt="" aria-hidden="true" /><span>MD</span>';
-const PDF_LOGO_ICON = '<img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSKH9SxmiPIAJEJ9J-XS8ZRg6sGP487j9ly9ZzXq4vQIwYnfsWC57rYy0Fe&s=10" alt="" aria-hidden="true" /><span>PDF</span>';
+const MD_LOGO_ICON = '<span class="download-badge" aria-hidden="true">MD</span>';
+const PDF_LOGO_ICON = '<span class="download-badge" aria-hidden="true">PDF</span>';
 
 function ensureToastElement() {
   let toast = document.getElementById('appToast');
@@ -5837,17 +6202,65 @@ selectedLookupWord?.addEventListener('input', () => {
   setSelectedLookupWord(selectedLookupWord.value);
 });
 lookupResults?.addEventListener('change', (event) => {
+  const sizeTarget = event.target instanceof HTMLElement ? event.target.closest('#lookupRhymePageSize') : null;
+  if (sizeTarget instanceof HTMLSelectElement) {
+    const parsed = Math.min(96, Math.max(6, Number(sizeTarget.value) || LOOKUP_RHYME_PAGE_SIZE));
+    state.lookupRhymePageSize = parsed;
+    renderLookupResults();
+    return;
+  }
+
+  const typeTarget = event.target instanceof HTMLElement ? event.target.closest('#lookupWordTypeFilter') : null;
+  if (typeTarget instanceof HTMLSelectElement) {
+    state.lookupWordTypeFilter = typeTarget.value || 'all';
+    state.lookupRhymePage = 1;
+    state.lookupWordTypeScanComplete = state.lookupWordTypeFilter === 'all';
+    renderLookupResults();
+    if (state.lookupWordTypeFilter === 'all') {
+      state.lookupLoadingWordTypes = false;
+      state.lookupWordTypeRequestId += 1;
+      renderLookupResults();
+      return;
+    }
+
+    startLookupWordTypeScan();
+    return;
+  }
+
   const target = event.target instanceof HTMLElement ? event.target.closest('#lookupSyllableFilter') : null;
   if (!(target instanceof HTMLSelectElement)) {
+    const pageTarget = event.target instanceof HTMLElement ? event.target.closest('#lookupRhymePageInput') : null;
+    if (!(pageTarget instanceof HTMLInputElement)) {
+      return;
+    }
+
+    setLookupRhymePage(pageTarget.value);
+    refreshLookupVisibleWordTypes();
     return;
   }
 
   state.lookupSyllableFilter = target.value || 'all';
+  state.lookupRhymePage = 1;
   recomputeLookupRhymes();
   renderLookupResults();
+  if (state.lookupWordTypeFilter !== 'all') {
+    startLookupWordTypeScan();
+  }
 
   if (state.selectedLookupWord && !state.lookupRhymeCandidates.length) {
     queueLookupAutoFetch();
+  }
+});
+lookupResults?.addEventListener('input', (event) => {
+  const pageTarget = event.target instanceof HTMLElement ? event.target.closest('#lookupRhymePageInput') : null;
+  if (!(pageTarget instanceof HTMLInputElement)) {
+    return;
+  }
+
+  const parsed = Number(pageTarget.value);
+  if (Number.isFinite(parsed) && parsed >= 1) {
+    state.lookupRhymePage = parsed;
+    renderLookupResults();
   }
 });
 lookupResults?.addEventListener('click', (event) => {
@@ -5860,6 +6273,16 @@ lookupResults?.addEventListener('click', (event) => {
 
   if (action === 'add-lookup-excluded-word') {
     addLookupExcludedWord(target.getAttribute('data-word') ?? '');
+    return;
+  }
+
+  if (action === 'lookup-rhyme-page-prev') {
+    setLookupRhymePage(state.lookupRhymePage - 1);
+    return;
+  }
+
+  if (action === 'lookup-rhyme-page-next') {
+    setLookupRhymePage(state.lookupRhymePage + 1);
   }
 });
 lookupExcludeCurrentBtn?.addEventListener('click', () => {
