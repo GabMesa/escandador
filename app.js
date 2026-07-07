@@ -99,7 +99,12 @@ const COLOR_PICKER_PALETTE = [
 const AUTO_SAVE_DELAY_MS = 1200;
 const TRASH_RETENTION_DAYS = 10;
 const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-const LOOKUP_PROXY_PREFIX = 'https://r.jina.ai/http://';
+const LOOKUP_PROXY_PREFIXES = [
+  'https://r.jina.ai/http://',
+  'https://r.jina.ai/http://https://',
+  'https://api.allorigins.win/raw?url=',
+  'https://cors.isomorphic-git.org/'
+];
 const LOOKUP_AUTO_FETCH_DELAY_MS = 420;
 
 const state = {
@@ -880,23 +885,59 @@ function extractWordRhymeData(word) {
   return extractRhymeData({ analyses: [analysis] });
 }
 
-function buildLookupProxyUrl(targetUrl) {
-  const normalizedTarget = String(targetUrl ?? '').replace(/^https?:\/\//i, '');
-  return `${LOOKUP_PROXY_PREFIX}${normalizedTarget}`;
+function buildLookupProxyUrls(targetUrl) {
+  const originalTarget = String(targetUrl ?? '').trim();
+  const normalizedTarget = originalTarget.replace(/^https?:\/\//i, '');
+  if (!originalTarget) {
+    return [];
+  }
+
+  return LOOKUP_PROXY_PREFIXES.map((prefix) => {
+    if (prefix.includes('allorigins.win')) {
+      return `${prefix}${encodeURIComponent(originalTarget)}`;
+    }
+
+    if (prefix.endsWith('http://https://')) {
+      return `${prefix}${normalizedTarget}`;
+    }
+
+    if (prefix.endsWith('http://')) {
+      return `${prefix}${normalizedTarget}`;
+    }
+
+    return `${prefix}${originalTarget}`;
+  });
 }
 
 async function fetchLookupSourceText(targetUrl) {
-  const response = await fetch(buildLookupProxyUrl(targetUrl), {
-    headers: {
-      Accept: 'text/plain, text/markdown;q=0.9, */*;q=0.8'
-    }
-  });
+  const proxyUrls = buildLookupProxyUrls(targetUrl);
+  const errors = [];
 
-  if (!response.ok) {
-    throw new Error(`No se pudo descargar la fuente (${response.status}).`);
+  for (const proxyUrl of proxyUrls) {
+    try {
+      const response = await fetch(proxyUrl, {
+        headers: {
+          Accept: 'text/plain, text/markdown;q=0.9, */*;q=0.8'
+        }
+      });
+
+      if (!response.ok) {
+        errors.push(`${proxyUrl} -> ${response.status}`);
+        continue;
+      }
+
+      const text = await response.text();
+      if (text && text.length > 120) {
+        return text;
+      }
+
+      errors.push(`${proxyUrl} -> respuesta vacía`);
+    } catch (error) {
+      errors.push(`${proxyUrl} -> ${String(error?.message ?? error)}`);
+    }
   }
 
-  return response.text();
+  throw new Error(`No se pudo descargar la fuente desde los proxies configurados. ${errors[0] ?? ''}`.trim());
 }
 
 async function fetchIedraSourceText(targetUrl) {
@@ -1044,6 +1085,11 @@ function buildLookupSyllableFilterOptions(selectedValue = 'all') {
     .join('');
 }
 
+function isProxyFailureError(message) {
+  const text = String(message ?? '').toLowerCase();
+  return text.includes('proxies configurados') || text.includes('proxy');
+}
+
 function renderLookupResults() {
   if (!lookupResults) {
     return;
@@ -1082,6 +1128,9 @@ function renderLookupResults() {
 
   const raeUrl = `https://dle.rae.es/${encodeURIComponent(state.selectedLookupWord)}`;
   const iedraUrl = `https://iedra.es/rimas/${encodeURIComponent(state.selectedLookupWord)}`;
+  const directLinksFallback = isProxyFailureError(state.lookupError)
+    ? `<p class="lookup-definition">Si los proxys fallan, abre directo: <a href="${escapeHtml(raeUrl)}" target="_blank" rel="noopener noreferrer">RAE</a> · <a href="${escapeHtml(iedraUrl)}" target="_blank" rel="noopener noreferrer">Iedra</a>.</p>`
+    : '';
 
   lookupResults.innerHTML = `
     <div class="lookup-section">
@@ -1102,6 +1151,7 @@ function renderLookupResults() {
     </div>
     ${loaderBlock}
     ${errorLine}
+    ${directLinksFallback}
     <p class="lookup-attribution">Información descargada desde <a href="${escapeHtml(raeUrl)}" target="_blank" rel="noopener noreferrer">RAE</a> y <a href="${escapeHtml(iedraUrl)}" target="_blank" rel="noopener noreferrer">Iedra</a>. La presentación y filtrado se realiza en esta aplicación.</p>
   `;
 }
