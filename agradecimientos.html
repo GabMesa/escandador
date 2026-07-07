@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agradecimientos | Escandidor de poesia</title>
+    <meta
+      name="description"
+      content="Agradecimientos a las fuentes y herramientas que inspiran este proyecto de escansion poetica."
+    />
+    <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/open-dyslexic" />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #efe7db;
+        --panel: rgba(253, 247, 238, 0.88);
+        --panel-border: rgba(53, 35, 18, 0.12);
+        --text: #1f160f;
+        --muted: #705f50;
+        --accent: #8b4d2c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "OpenDyslexic", "OpenDyslexicAlta", "Lexend", "Atkinson Hyperlegible", system-ui, sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at 10% 20%, #f7f1e7 0%, var(--bg) 55%, #e4d8c8 100%);
+      }
+
+      .page {
+        width: min(920px, calc(100% - 24px));
+        margin: 0 auto;
+        padding: 36px 0 56px;
+      }
+
+      .card {
+        border: 1px solid var(--panel-border);
+        background: var(--panel);
+        border-radius: 18px;
+        padding: clamp(18px, 3vw, 30px);
+        box-shadow: 0 16px 38px rgba(58, 37, 20, 0.09);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.9rem, 4vw, 3rem);
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+
+      .lede {
+        margin: 12px 0 24px;
+        color: var(--muted);
+        max-width: 68ch;
+        line-height: 1.6;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 1.2rem;
+        line-height: 1.7;
+      }
+
+      li + li {
+        margin-top: 12px;
+      }
+
+      a {
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      .actions {
+        margin-top: 28px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .button-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        border: 1px solid rgba(53, 35, 18, 0.2);
+        background: #f6eee2;
+        color: var(--text);
+        text-decoration: none;
+        padding: 0.55rem 1rem;
+      }
+
+      .button-link:hover,
+      .button-link:focus-visible {
+        background: #f2e6d6;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="card" aria-labelledby="agradecimientos-title">
+        <h1 id="agradecimientos-title">Agradecimientos</h1>
+        <p class="lede">
+          Este proyecto nace de muchas lecturas, herramientas y personas que mantienen viva la metrica en espanol.
+          Gracias por compartir conocimiento con tanta generosidad.
+        </p>
+
+        <ul>
+          <li>
+            A la
+            <a href="https://www.rae.es/" target="_blank" rel="noopener noreferrer">Real Academia Espanola</a>,
+            por su labor normativa y de consulta linguistica, especialmente a traves del Diccionario de la lengua espanola y sus recursos asociados.
+          </li>
+          <li>
+            A
+            <a href="https://iedra.es/" target="_blank" rel="noopener noreferrer">Iedra</a>,
+            por facilitar la busqueda de rimas consonantes y asonantes y aportar una herramienta util para poetas.
+          </li>
+          <li>
+            A los maravillosos ensayos de
+            <a href="https://www.lasnuevemusas.com/artes/" target="_blank" rel="noopener noreferrer">VAMOS A HABLAR DE METRICA</a>,
+            por divulgar la escansion y la teoria poetica de forma clara y apasionada.
+          </li>
+        </ul>
+
+        <div class="actions">
+          <a class="button-link" href="index.html">Volver al escandidor</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -9,6 +9,7 @@
       content="Analizador básico de poesía en español con separación silábica, conteo métrico y acentuación visible."
     />
     <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/open-dyslexic" />
+    <link rel="icon" href="favicon.ico" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -94,6 +95,10 @@
                   <input id="repeatRhymeScheme" type="checkbox" />
                   Repetir esquema por estrofa
                 </label>
+                <label class="checkbox-row" for="distinguishSZInRhyme">
+                  <input id="distinguishSZInRhyme" type="checkbox" />
+                  Distinguir s y z en consonante
+                </label>
                 <p class="hint">Si está activo, los grupos separados por espacios se repiten por estrofa. Ej: ABAB ABBA → ABAB ABBA ABAB ABBA...</p>
                 <p class="hint">Haz clic en el color de cada rima para personalizarlo; los colores se guardan para ese poema.</p>
               </div>
@@ -137,6 +142,26 @@
           </div>
         </details>
 
+        <details id="lookupShell" class="control-card config-shell" open>
+          <summary>
+            <span>Rimas y definición</span>
+            <span class="summary-hint">
+              Consulta automática en RAE e Iedra
+              <svg class="config-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </span>
+          </summary>
+          <div id="wordLookupBar" class="quick-control-group word-lookup-bar" aria-live="polite">
+            <span class="quick-control-label">Palabra</span>
+            <input id="selectedLookupWord" class="selected-word-input" type="text" placeholder="Selecciona una palabra" aria-label="Palabra para buscar" title="Escribe o selecciona una palabra para consultar definición y rimas" />
+          </div>
+          <div id="lookupResults" class="lookup-results" aria-live="polite">
+            <p class="lookup-empty">Selecciona o escribe una palabra para consultar definición y rimas.</p>
+            <p class="lookup-attribution">Información basada en <a href="https://dle.rae.es/" target="_blank" rel="noopener noreferrer">RAE</a> y <a href="https://iedra.es/" target="_blank" rel="noopener noreferrer">Iedra</a>.</p>
+          </div>
+        </details>
+
         <div class="quick-controls" aria-label="Ajustes de lectura y vista">
           <div class="quick-control-group">
             <span class="quick-control-label">Tamaño de texto</span>
@@ -154,6 +179,7 @@
               <option value="analysis">Solo análisis</option>
             </select>
           </div>
+
         </div>
       </section>
 
@@ -219,7 +245,7 @@
         </div>
       </div>
 
-      <footer class="app-footer">De Mesa© para el <a href="https://discord.gg/mSz3ER2JKR" target="_blank" rel="noopener noreferrer">Busto de Paellas</a>.</footer>
+      <footer class="app-footer">De Mesa© para el <a href="https://discord.gg/mSz3ER2JKR" target="_blank" rel="noopener noreferrer">Busto de Paellas</a>. <a href="agradecimientos.html">Agradecimientos</a>.</footer>
     </main>
 
     <script type="module" src="app.js"></script>

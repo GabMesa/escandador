@@ -14,6 +14,7 @@ const hemistichSplit = document.getElementById('hemistichSplit');
 const rhymeMode = document.getElementById('rhymeMode');
 const rhymeScheme = document.getElementById('rhymeScheme');
 const repeatRhymeScheme = document.getElementById('repeatRhymeScheme');
+const distinguishSZInRhyme = document.getElementById('distinguishSZInRhyme');
 const sinalefaEnabled = document.getElementById('sinalefaEnabled');
 const stanzaSummaryBadge = document.getElementById('stanzaSummaryBadge');
 const rhymeSchemeBadge = document.getElementById('rhymeSchemeBadge');
@@ -59,6 +60,11 @@ const fontScaleValue = document.getElementById('fontScaleValue');
 const fontSizeDown = document.getElementById('fontSizeDown');
 const fontSizeUp = document.getElementById('fontSizeUp');
 const panelViewMode = document.getElementById('panelViewMode');
+const wordLookupBar = document.getElementById('wordLookupBar');
+const selectedLookupWord = document.getElementById('selectedLookupWord');
+const lookupRaeBtn = document.getElementById('lookupRaeBtn');
+const lookupRimasBtn = document.getElementById('lookupRimasBtn');
+const lookupResults = document.getElementById('lookupResults');
 const workspace = document.querySelector('.workspace');
 const inputPanel = document.querySelector('.input-panel');
 const outputPanel = document.querySelector('.output-panel');
@@ -93,6 +99,8 @@ const COLOR_PICKER_PALETTE = [
 const AUTO_SAVE_DELAY_MS = 1200;
 const TRASH_RETENTION_DAYS = 10;
 const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const LOOKUP_PROXY_PREFIX = 'https://r.jina.ai/http://';
+const LOOKUP_AUTO_FETCH_DELAY_MS = 420;
 
 const state = {
   stressPattern: [],
@@ -101,6 +109,7 @@ const state = {
   rhymeMode: 'asonante',
   rhymeScheme: '',
   repeatRhymeScheme: false,
+  distinguishSZInRhyme: false,
   analysisMode: 'visual',
   panelViewMode: 'both',
   fontScale: 100,
@@ -112,13 +121,25 @@ const state = {
   sinalefaOverrides: {},
   lineOverrides: {},
   openAdvancedByLine: {},
-  currentAnalysisTitle: ''
+  currentAnalysisTitle: '',
+  selectedLookupWord: '',
+  lookupDefinition: '',
+  lookupRhymes: [],
+  lookupRhymeCandidates: [],
+  lookupMode: 'asonante',
+  lookupSyllableFilter: 'all',
+  lookupLoadingDefinition: false,
+  lookupLoadingRhymes: false,
+  lookupError: '',
+  lookupDefinitionRequestId: 0,
+  lookupRhymeRequestId: 0
 };
 
 let lastRuntime = [];
 let autoSaveTimer = null;
 let toastTimer = null;
 let selectedVersionIds = new Set();
+let lookupAutoFetchTimer = null;
 
 function loadPoemColors() {
   try {
@@ -687,6 +708,482 @@ function normalizeSearchText(value) {
     .trim();
 }
 
+function extractLookupWord(rawText) {
+  const text = String(rawText ?? '').trim();
+  if (!text) {
+    return '';
+  }
+
+  const match = text.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:['’-][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*/u);
+  if (!match) {
+    return '';
+  }
+
+  return match[0].toLowerCase();
+}
+
+function refreshLookupBar() {
+  const hasWord = Boolean(state.selectedLookupWord);
+  const configuredRhymeMode = rhymeMode?.value === 'consonante'
+    ? 'consonante'
+    : rhymeMode?.value === 'sextina'
+      ? 'sextina'
+      : 'asonante';
+
+  if (wordLookupBar) {
+    wordLookupBar.classList.toggle('is-active', hasWord);
+  }
+
+  if (selectedLookupWord) {
+    selectedLookupWord.value = hasWord ? state.selectedLookupWord : '';
+  }
+
+  if (lookupRaeBtn) {
+    lookupRaeBtn.disabled = !hasWord;
+  }
+
+  if (lookupRimasBtn) {
+    lookupRimasBtn.disabled = !hasWord;
+    lookupRimasBtn.textContent = 'On change';
+    lookupRimasBtn.title = `Rimas en actualización automática (${configuredRhymeMode})`;
+  }
+
+  if (lookupRaeBtn) {
+    lookupRaeBtn.textContent = 'On change';
+    lookupRaeBtn.title = 'Definición en actualización automática';
+  }
+
+  renderLookupResults();
+}
+
+function queueLookupAutoFetch() {
+  if (lookupAutoFetchTimer) {
+    clearTimeout(lookupAutoFetchTimer);
+    lookupAutoFetchTimer = null;
+  }
+
+  if (!state.selectedLookupWord) {
+    return;
+  }
+
+  lookupAutoFetchTimer = setTimeout(() => {
+    lookupAutoFetchTimer = null;
+    openRaeDefinition();
+    openIedraRimasFromConfig();
+  }, LOOKUP_AUTO_FETCH_DELAY_MS);
+}
+
+function setSelectedLookupWord(rawWord) {
+  const nextWord = extractLookupWord(rawWord);
+  if (state.selectedLookupWord === nextWord) {
+    return;
+  }
+
+  state.selectedLookupWord = nextWord;
+  state.lookupDefinition = '';
+  state.lookupRhymeCandidates = [];
+  state.lookupRhymes = [];
+  state.lookupError = '';
+  state.lookupLoadingDefinition = false;
+  state.lookupLoadingRhymes = false;
+  state.lookupDefinitionRequestId += 1;
+  state.lookupRhymeRequestId += 1;
+  refreshLookupBar();
+
+  if (nextWord) {
+    queueLookupAutoFetch();
+  }
+}
+
+function getTextSelectionWithinElement(element) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.rangeCount === 0) {
+    return '';
+  }
+
+  const selectedText = String(selection.toString() ?? '').trim();
+  if (!selectedText) {
+    return '';
+  }
+
+  const anchorNode = selection.anchorNode;
+  if (!anchorNode || !(element instanceof Element)) {
+    return '';
+  }
+
+  const container = anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
+  if (!(container instanceof Node) || !element.contains(container)) {
+    return '';
+  }
+
+  return selectedText;
+}
+
+function syncLookupWordFromPoemInput() {
+  if (!(poemInput instanceof HTMLTextAreaElement)) {
+    return;
+  }
+
+  const start = poemInput.selectionStart;
+  const end = poemInput.selectionEnd;
+
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start === end) {
+    return;
+  }
+
+  const selectedText = poemInput.value.slice(start, end);
+  setSelectedLookupWord(selectedText);
+}
+
+function syncLookupWordFromAnalysisSelection() {
+  const selectedText = getTextSelectionWithinElement(analysisOutput);
+  if (!selectedText) {
+    return;
+  }
+
+  setSelectedLookupWord(selectedText);
+}
+
+function openLookupUrl(url, errorMessage = 'No se pudo abrir el enlace.') {
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) {
+    showToast(errorMessage, 'warning');
+  }
+}
+
+function normalizeLookupComparable(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zñü]/g, '');
+}
+
+function cleanMarkdownText(value) {
+  return String(value ?? '')
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/[_*`>#]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractWordRhymeData(word) {
+  const analysis = analyzeWord(String(word ?? '').trim());
+  if (!analysis || !Array.isArray(analysis.syllables) || !analysis.syllables.length) {
+    return {
+      consonantKey: '-',
+      assonantKey: '-',
+      finalWordKey: normalizeValidationWord(word)
+    };
+  }
+
+  return extractRhymeData({ analyses: [analysis] });
+}
+
+function buildLookupProxyUrl(targetUrl) {
+  const normalizedTarget = String(targetUrl ?? '').replace(/^https?:\/\//i, '');
+  return `${LOOKUP_PROXY_PREFIX}${normalizedTarget}`;
+}
+
+async function fetchLookupSourceText(targetUrl) {
+  const response = await fetch(buildLookupProxyUrl(targetUrl), {
+    headers: {
+      Accept: 'text/plain, text/markdown;q=0.9, */*;q=0.8'
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`No se pudo descargar la fuente (${response.status}).`);
+  }
+
+  return response.text();
+}
+
+async function fetchIedraSourceText(targetUrl) {
+  try {
+    const direct = await fetch(targetUrl, {
+      headers: {
+        Accept: 'text/html, text/plain;q=0.9, */*;q=0.8'
+      }
+    });
+
+    if (direct.ok) {
+      const text = await direct.text();
+      if (text && text.length > 1000) {
+        return text;
+      }
+    }
+  } catch {
+    // Fall back to proxy if direct cross-origin fetch is blocked.
+  }
+
+  return fetchLookupSourceText(targetUrl);
+}
+
+function parseRaeDefinitionFromSource(sourceText) {
+  const sectionStart = sourceText.indexOf('## Definición');
+  if (sectionStart < 0) {
+    return '';
+  }
+
+  const afterSection = sourceText.slice(sectionStart + '## Definición'.length);
+  const firstSubentry = afterSection.indexOf('\n### ');
+  const definitionBlock = firstSubentry >= 0 ? afterSection.slice(0, firstSubentry) : afterSection;
+  const senseMatches = [...definitionBlock.matchAll(/^\s*\d+\.\s+\d+\.\s+(.+)$/gm)];
+
+  if (!senseMatches.length) {
+    return cleanMarkdownText(definitionBlock).slice(0, 420);
+  }
+
+  return senseMatches
+    .slice(0, 3)
+    .map((item) => cleanMarkdownText(item[1]))
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+function extractIedraCandidatesFromSource(sourceText, targetWord) {
+  const matches = [
+    ...sourceText.matchAll(/\[([^\]\n]{2,})\]\(https?:\/\/iedra\.es\/palabras\/[^\)]+\)/g),
+    ...sourceText.matchAll(/<a[^>]+href=["']\/palabras\/[^"']+["'][^>]*>([^<]{2,})<\/a>/g)
+  ];
+  const targetComparable = normalizeLookupComparable(targetWord);
+  const words = [];
+
+  for (const match of matches) {
+    const raw = cleanMarkdownText(match[1] ?? match[2] ?? '');
+    const normalized = raw.replace(/-+$/g, '').trim();
+    if (!normalized) {
+      continue;
+    }
+
+    const comparable = normalizeLookupComparable(normalized);
+    if (!comparable || comparable === targetComparable) {
+      continue;
+    }
+
+    words.push(normalized);
+  }
+
+  return words;
+}
+
+function filterRhymesByMode(targetWord, candidates, mode, syllableFilter = 'all') {
+  const targetData = extractWordRhymeData(targetWord);
+  const filtered = [];
+  const seen = new Set();
+  const syllableTarget = syllableFilter === 'all' ? -1 : Number(syllableFilter);
+
+  for (const candidate of candidates) {
+    const candidateData = extractWordRhymeData(candidate);
+    const candidateAnalysis = analyzeWord(candidate);
+    const syllableCount = Array.isArray(candidateAnalysis?.syllables) ? candidateAnalysis.syllables.length : 0;
+    const passesSyllableFilter = syllableTarget <= 0
+      ? true
+      : syllableTarget >= 8
+        ? syllableCount >= 8
+        : syllableCount === syllableTarget;
+
+    if (!passesSyllableFilter) {
+      continue;
+    }
+
+    const isConsonantMatch = candidateData.consonantKey === targetData.consonantKey;
+    const isAssonantOnlyMatch = candidateData.assonantKey === targetData.assonantKey
+      && candidateData.consonantKey !== targetData.consonantKey;
+
+    const isMatch = mode === 'consonante'
+      ? isConsonantMatch
+      : mode === 'sextina'
+        ? candidateData.finalWordKey === targetData.finalWordKey
+        : isAssonantOnlyMatch;
+
+    if (isMatch) {
+      const comparable = normalizeLookupComparable(candidate);
+      if (seen.has(comparable)) {
+        continue;
+      }
+      seen.add(comparable);
+      filtered.push(candidate);
+    }
+  }
+
+  return filtered;
+}
+
+function recomputeLookupRhymes() {
+  if (!state.selectedLookupWord) {
+    state.lookupRhymes = [];
+    return;
+  }
+
+  const mode = rhymeMode?.value === 'consonante'
+    ? 'consonante'
+    : rhymeMode?.value === 'sextina'
+      ? 'sextina'
+      : 'asonante';
+
+  state.lookupMode = mode;
+  state.lookupRhymes = filterRhymesByMode(
+    state.selectedLookupWord,
+    state.lookupRhymeCandidates,
+    mode,
+    state.lookupSyllableFilter
+  );
+}
+
+function buildLookupSyllableFilterOptions(selectedValue = 'all') {
+  const values = ['all', '1', '2', '3', '4', '5', '6', '7', '8'];
+  return values
+    .map((value) => {
+      const label = value === 'all' ? 'Todas' : value === '8' ? '8+' : value;
+      const selected = String(selectedValue) === value ? ' selected' : '';
+      return `<option value="${value}"${selected}>${label}</option>`;
+    })
+    .join('');
+}
+
+function renderLookupResults() {
+  if (!lookupResults) {
+    return;
+  }
+
+  const hasWord = Boolean(state.selectedLookupWord);
+  if (!hasWord) {
+    lookupResults.innerHTML = '<p class="lookup-empty">Selecciona o escribe una palabra para consultar definición y rimas.</p><p class="lookup-attribution">Información basada en <a id="lookupRaeLink" href="https://dle.rae.es/" target="_blank" rel="noopener noreferrer">RAE</a> y <a id="lookupIedraLink" href="https://iedra.es/" target="_blank" rel="noopener noreferrer">Iedra</a>.</p>';
+    return;
+  }
+
+  const modeLabel = state.lookupMode === 'consonante'
+    ? 'consonante'
+    : state.lookupMode === 'sextina'
+      ? 'sextina'
+      : 'asonante';
+
+  const definitionText = state.lookupLoadingDefinition
+    ? 'Buscando definición en la RAE...'
+    : state.lookupDefinition || 'La definición se descarga automáticamente al seleccionar o escribir una palabra.';
+
+  const rhymesText = state.lookupLoadingRhymes
+    ? '<li>Cargando rimas de Iedra...</li>'
+    : state.lookupRhymes.length
+      ? state.lookupRhymes.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
+      : '<li>Las rimas se descargan y filtran automáticamente según configuración y sílabas.</li>';
+
+  const loaderVisible = state.lookupLoadingDefinition || state.lookupLoadingRhymes;
+  const loaderBlock = loaderVisible
+    ? '<p class="lookup-loader"><span class="lookup-spinner" aria-hidden="true"></span>Cargando información desde las fuentes...</p>'
+    : '';
+
+  const errorLine = state.lookupError
+    ? `<p class="lookup-definition">${escapeHtml(state.lookupError)}</p>`
+    : '';
+
+  const raeUrl = `https://dle.rae.es/${encodeURIComponent(state.selectedLookupWord)}`;
+  const iedraUrl = `https://iedra.es/rimas/${encodeURIComponent(state.selectedLookupWord)}`;
+
+  lookupResults.innerHTML = `
+    <div class="lookup-section">
+      <strong>Definición (RAE)</strong>
+      </div>
+      <p class="lookup-definition">${escapeHtml(definitionText)}</p>
+    </div>
+    <div class="lookup-section">
+      <strong>Rimas filtradas (${escapeHtml(modeLabel)})</strong>
+      </div>
+      <div class="lookup-filter-row">
+        <label for="lookupSyllableFilter" class="quick-control-label">Sílabas</label>
+        <select id="lookupSyllableFilter" title="Filtra rimas por cantidad de sílabas.">
+          ${buildLookupSyllableFilterOptions(state.lookupSyllableFilter)}
+        </select>
+      </div>
+      <ul class="lookup-rhyme-list">${rhymesText}</ul>
+    </div>
+    ${loaderBlock}
+    ${errorLine}
+    <p class="lookup-attribution">Información descargada desde <a href="${escapeHtml(raeUrl)}" target="_blank" rel="noopener noreferrer">RAE</a> y <a href="${escapeHtml(iedraUrl)}" target="_blank" rel="noopener noreferrer">Iedra</a>. La presentación y filtrado se realiza en esta aplicación.</p>
+  `;
+}
+
+async function openRaeDefinition() {
+  if (!state.selectedLookupWord) {
+    return;
+  }
+
+  const requestId = state.lookupDefinitionRequestId + 1;
+  state.lookupDefinitionRequestId = requestId;
+  state.lookupError = '';
+  state.lookupLoadingDefinition = true;
+  renderLookupResults();
+
+  try {
+    const targetWord = encodeURIComponent(state.selectedLookupWord);
+    const sourceText = await fetchLookupSourceText(`https://dle.rae.es/${targetWord}`);
+    if (requestId !== state.lookupDefinitionRequestId) {
+      return;
+    }
+
+    state.lookupDefinition = parseRaeDefinitionFromSource(sourceText);
+    if (!state.lookupDefinition) {
+      state.lookupDefinition = 'No se pudo extraer la definición principal desde la fuente.';
+    }
+  } catch (error) {
+    if (requestId !== state.lookupDefinitionRequestId) {
+      return;
+    }
+    state.lookupError = `Error al consultar RAE: ${String(error?.message ?? error)}`;
+  } finally {
+    if (requestId === state.lookupDefinitionRequestId) {
+      state.lookupLoadingDefinition = false;
+      renderLookupResults();
+    }
+  }
+}
+
+async function openIedraRimasFromConfig() {
+  if (!state.selectedLookupWord) {
+    return;
+  }
+
+  const configuredRhymeMode = rhymeMode?.value === 'consonante'
+    ? 'consonante'
+    : rhymeMode?.value === 'sextina'
+      ? 'sextina'
+      : 'asonante';
+  const requestId = state.lookupRhymeRequestId + 1;
+  state.lookupRhymeRequestId = requestId;
+  state.lookupError = '';
+  state.lookupLoadingRhymes = true;
+  state.lookupMode = configuredRhymeMode;
+  renderLookupResults();
+
+  try {
+    const targetWord = encodeURIComponent(state.selectedLookupWord);
+    const sourceText = await fetchIedraSourceText(`https://iedra.es/rimas/${targetWord}`);
+    if (requestId !== state.lookupRhymeRequestId) {
+      return;
+    }
+
+    state.lookupRhymeCandidates = extractIedraCandidatesFromSource(sourceText, state.selectedLookupWord);
+    recomputeLookupRhymes();
+
+    if (!state.lookupRhymes.length) {
+      state.lookupError = `No se encontraron rimas ${configuredRhymeMode} tras filtrar las palabras descargadas.`;
+    }
+  } catch (error) {
+    if (requestId !== state.lookupRhymeRequestId) {
+      return;
+    }
+    state.lookupError = `Error al consultar Iedra: ${String(error?.message ?? error)}`;
+  } finally {
+    if (requestId === state.lookupRhymeRequestId) {
+      state.lookupLoadingRhymes = false;
+      renderLookupResults();
+    }
+  }
+}
+
 const MD_LOGO_ICON = '<img src="https://www.docstomarkdown.pro/logo-48.png" alt="" aria-hidden="true" /><span>MD</span>';
 const PDF_LOGO_ICON = '<img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSKH9SxmiPIAJEJ9J-XS8ZRg6sGP487j9ly9ZzXq4vQIwYnfsWC57rYy0Fe&s=10" alt="" aria-hidden="true" /><span>PDF</span>';
 
@@ -1075,6 +1572,9 @@ function loadVersionById(title, versionId) {
     }
     if (repeatRhymeScheme) {
       repeatRhymeScheme.checked = Boolean(version.settings.repeatRhymeScheme);
+    }
+    if (distinguishSZInRhyme) {
+      distinguishSZInRhyme.checked = Boolean(version.settings.distinguishSZInRhyme);
     }
   }
 
@@ -1741,7 +2241,8 @@ function buildCurrentSnapshot() {
       hemistichSplit: hemistichSplit.value,
       rhymeMode: rhymeMode?.value ?? 'asonante',
       rhymeScheme: rhymeScheme?.value ?? '',
-      repeatRhymeScheme: Boolean(repeatRhymeScheme?.checked)
+      repeatRhymeScheme: Boolean(repeatRhymeScheme?.checked),
+      distinguishSZInRhyme: Boolean(distinguishSZInRhyme?.checked)
     },
     sinalefaOverrides: state.sinalefaOverrides,
     lineOverrides: state.lineOverrides
@@ -1756,7 +2257,8 @@ function getSnapshotSignature(snapshot) {
       stressCustom: String(snapshot.settings?.stressCustom ?? ''),
       hemistichSplit: String(snapshot.settings?.hemistichSplit ?? ''),
       rhymeMode: String(snapshot.settings?.rhymeMode ?? 'asonante'),
-      rhymeScheme: String(snapshot.settings?.rhymeScheme ?? '')
+      rhymeScheme: String(snapshot.settings?.rhymeScheme ?? ''),
+      distinguishSZInRhyme: Boolean(snapshot.settings?.distinguishSZInRhyme)
     },
     sinalefaOverrides: snapshot.sinalefaOverrides ?? {},
     lineOverrides: snapshot.lineOverrides ?? {}
@@ -1831,6 +2333,9 @@ function createNewPoem() {
   }
   if (repeatRhymeScheme) {
     repeatRhymeScheme.checked = false;
+  }
+  if (distinguishSZInRhyme) {
+    distinguishSZInRhyme.checked = false;
   }
 
   state.sinalefaOverrides = {};
@@ -2502,7 +3007,8 @@ function importPoemsFromMarkdown(markdown) {
         stressCustom: stressCustom.value,
         hemistichSplit: hemistichSplit.value,
         rhymeMode: rhymeMode?.value ?? 'asonante',
-        rhymeScheme: rhymeScheme?.value ?? ''
+        rhymeScheme: rhymeScheme?.value ?? '',
+        distinguishSZInRhyme: Boolean(distinguishSZInRhyme?.checked)
       },
       sinalefaOverrides: {},
       lineOverrides: {},
@@ -2815,6 +3321,7 @@ function normalizeRhymeChunk(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/y/g, 'i')
+    .replace(/z/g, state.distinguishSZInRhyme ? 'z' : 's')
     .replace(/[^a-zñü]/g, '');
 }
 
@@ -4425,6 +4932,7 @@ function syncStateFromControls() {
   state.rhymeMode = rhymeMode?.value === 'consonante' ? 'consonante' : rhymeMode?.value === 'sextina' ? 'sextina' : 'asonante';
   state.rhymeScheme = rhymeScheme?.value ?? '';
   state.repeatRhymeScheme = Boolean(repeatRhymeScheme?.checked);
+  state.distinguishSZInRhyme = Boolean(distinguishSZInRhyme?.checked);
   state.sinalefaEnabled = true;
 }
 
@@ -4537,10 +5045,20 @@ stressCustom.addEventListener('input', () => {
 hemistichSplit.addEventListener('input', updateAnalysis);
 rhymeMode?.addEventListener('change', () => {
   syncRhymeSchemePreset();
+  recomputeLookupRhymes();
+  refreshLookupBar();
+  if (state.selectedLookupWord && !state.lookupRhymeCandidates.length) {
+    queueLookupAutoFetch();
+  }
   updateAnalysis();
 });
 rhymeScheme?.addEventListener('input', updateAnalysis);
 repeatRhymeScheme?.addEventListener('change', () => {
+  updateAnalysis();
+});
+distinguishSZInRhyme?.addEventListener('change', () => {
+  recomputeLookupRhymes();
+  renderLookupResults();
   updateAnalysis();
 });
 analysisModeToggle?.addEventListener('click', () => {
@@ -4564,6 +5082,38 @@ panelViewMode?.addEventListener('change', () => {
     : 'both';
   applyPanelViewMode();
   saveUiPreferences();
+});
+lookupRaeBtn?.addEventListener('click', openRaeDefinition);
+lookupRimasBtn?.addEventListener('click', openIedraRimasFromConfig);
+poemInput?.addEventListener('mouseup', syncLookupWordFromPoemInput);
+poemInput?.addEventListener('keyup', syncLookupWordFromPoemInput);
+analysisOutput?.addEventListener('mouseup', syncLookupWordFromAnalysisSelection);
+analysisOutput?.addEventListener('keyup', syncLookupWordFromAnalysisSelection);
+selectedLookupWord?.addEventListener('input', () => {
+  setSelectedLookupWord(selectedLookupWord.value);
+});
+lookupResults?.addEventListener('change', (event) => {
+  const target = event.target instanceof HTMLElement ? event.target.closest('#lookupSyllableFilter') : null;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  state.lookupSyllableFilter = target.value || 'all';
+  recomputeLookupRhymes();
+  renderLookupResults();
+
+  if (state.selectedLookupWord && !state.lookupRhymeCandidates.length) {
+    queueLookupAutoFetch();
+  }
+});
+selectedLookupWord?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') {
+    return;
+  }
+
+  event.preventDefault();
+  openRaeDefinition();
+  openIedraRimasFromConfig();
 });
 
 colorPickerSwatches?.addEventListener('click', (event) => {
@@ -5146,6 +5696,7 @@ setPoemTitleDisplay(poemTitle?.value ?? '');
 updateDefaultColorButton();
 updateVersionManagerStatus();
 renderSavedVersionList(savedPoemName?.value ?? '', savedPoemVersion?.value ?? '');
+refreshLookupBar();
 
 window.PoetryAnalyzer = {
   analyzePoem,
