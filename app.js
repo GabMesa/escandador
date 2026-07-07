@@ -3,7 +3,10 @@ import {
   normalizeInput,
   analyzeWord,
   adjustPoeticCount,
-  isUnstressedMonosyllable
+  isUnstressedMonosyllable,
+  normalizeValidationWord,
+  normalizeRhymeChunk,
+  extractRhymeData
 } from './analyzer.js';
 
 const poemInput = document.getElementById('poemInput');
@@ -84,7 +87,6 @@ es más estrellas que alarmas. `;
 
 const DEFAULT_SEXTINA_SCHEME = 'ABCDEF FAEBDC CFDABE ECBFAD DEACFB BDFECA AB CD EF';
 
-
 const LOCAL_POEM_MEMORY_KEY = 'escandador.poemMemory.v1';
 const LOCAL_UI_PREFERENCES_KEY = 'escandador.uiPreferences.v1';
 const LOCAL_POEM_COLORS_KEY = 'escandador.poemColors.v1';
@@ -161,15 +163,6 @@ let autoSaveTimer = null;
 let toastTimer = null;
 let selectedVersionIds = new Set();
 let lookupAutoFetchTimer = null;
-let lookupWordTypeCache = loadLookupWordTypeCache();
-state.lookupVisibleWordTypes = lookupWordTypeCache;
-let openSynonymsIndex = null;
-let openSynonymsIndexPromise = null;
-let openFrequencyIndex = null;
-let openFrequencyIndexPromise = null;
-let openRhymeLexicon = null;
-let openRhymeLexiconPromise = null;
-
 function loadLookupWordTypeCache() {
   try {
     const raw = localStorage.getItem(LOOKUP_WORD_TYPE_CACHE_KEY);
@@ -191,6 +184,15 @@ function saveLookupWordTypeCache() {
     // Ignore storage failures; classification can still run without persistence.
   }
 }
+
+let lookupWordTypeCache = loadLookupWordTypeCache();
+state.lookupVisibleWordTypes = lookupWordTypeCache;
+let openSynonymsIndex = null;
+let openSynonymsIndexPromise = null;
+let openFrequencyIndex = null;
+let openFrequencyIndexPromise = null;
+let openRhymeLexicon = null;
+let openRhymeLexiconPromise = null;
 
 function loadPoemColors() {
   try {
@@ -939,7 +941,10 @@ function extractWordRhymeData(word) {
     };
   }
 
-  return extractRhymeData({ analyses: [analysis] });
+  return extractRhymeData(
+    { analyses: [analysis] },
+    { distinguishSZInRhyme: state.distinguishSZInRhyme }
+  );
 }
 
 async function fetchLookupSourceText(targetUrl) {
@@ -4257,203 +4262,12 @@ function focusPoemLine(lineIndex) {
   poemInput.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight * 1.5);
 }
 
-function stripSilentQGU(value) {
-  // "qu"/"gu" before e/i is a silent u (que, qui, gue, gui). A written ü
-  // (güe, güi) is a distinct character and is intentionally left untouched
-  // because that u is actually pronounced.
-  return String(value ?? '').replace(/([gq])u(?=[eéií])/gi, '$1');
-}
-
-function findFirstSoundingVowelIndex(text) {
-  const chars = String(text ?? '');
-  for (let index = 0; index < chars.length; index += 1) {
-    const ch = chars[index];
-    if (!/[aeiouáéíóúü]/i.test(ch)) {
-      continue;
-    }
-
-    if (ch.toLowerCase() === 'u') {
-      const previous = chars[index - 1]?.toLowerCase();
-      const next = chars[index + 1]?.toLowerCase();
-      const nextIsEorI = next === 'e' || next === 'i' || next === 'é' || next === 'í';
-      if ((previous === 'g' || previous === 'q') && nextIsEorI) {
-        continue;
-      }
-    }
-
-    return index;
-  }
-
-  return -1;
-}
-
-function normalizeRhymeChunk(value) {
-  return stripSilentQGU(String(value ?? '').toLowerCase())
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/y/g, 'i')
-    .replace(/z/g, state.distinguishSZInRhyme ? 'z' : 's')
-    .replace(/[^a-zñü]/g, '');
-}
-
-function protectHiatusWeakVowels(value) {
-  return stripSilentQGU(String(value ?? '').toLowerCase())
-    .normalize('NFD')
-    .replace(/i\u0301/g, 'I')
-    .replace(/u\u0301/g, 'U')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-function restoreProtectedWeakVowels(value) {
-  return String(value ?? '')
-    .replace(/I/g, 'i')
-    .replace(/U/g, 'u');
-}
-
-function buildRelaxedConsonantRhymeKey(rawTail, pattern, replacement) {
-  const protectedTail = protectHiatusWeakVowels(rawTail);
-  const relaxedTail = protectedTail.replace(pattern, replacement);
-
-  if (!relaxedTail || relaxedTail === protectedTail) {
-    return '';
-  }
-
-  return normalizeRhymeChunk(restoreProtectedWeakVowels(relaxedTail));
-}
-
-function extractNormalizedVowels(value) {
-  return normalizeRhymeChunk(value).replace(/[^aeiou]/g, '');
-}
-
-function getAssonantVowelFromSyllable(syllable) {
-  const vowels = extractNormalizedVowels(String(syllable ?? ''));
-  if (!vowels) {
-    return '';
-  }
-
-  const strong = vowels.match(/[aeo]/g);
-  if (strong?.length) {
-    return strong[strong.length - 1];
-  }
-
-  return vowels[vowels.length - 1];
-}
-
-function buildConsonantRhymeCandidates(rawTail, lastWord) {
-  const strictKey = normalizeRhymeChunk(rawTail);
-  if (!strictKey) {
-    return ['-'];
-  }
-
-  const candidates = new Set([strictKey]);
-
-  // Poetic license: in rhyme zone, weak vowels in diphthongs may be omitted.
-  const withoutRisingWeak = buildRelaxedConsonantRhymeKey(rawTail, /(^|[^aeiouIU])([iu])([aeo])/g, '$1$3');
-  if (withoutRisingWeak && withoutRisingWeak !== strictKey) {
-    candidates.add(withoutRisingWeak);
-  }
-
-  const withoutFallingWeak = buildRelaxedConsonantRhymeKey(rawTail, /([aeo])([iu])(?=[^aeiouIU]|$)/g, '$1');
-  if (withoutFallingWeak && withoutFallingWeak !== strictKey) {
-    candidates.add(withoutFallingWeak);
-  }
-
-  // Poetic license: for esdrujula/sobreesdrujula endings, the post-tonic
-  // syllable can be ignored for rhyme purposes.
-  const accentType = String(lastWord?.accentType ?? '');
-  const stressedTailSyllables = Array.isArray(lastWord?.syllables)
-    ? lastWord.syllables.slice(lastWord.stressIndex)
-    : [];
-  if ((accentType === 'esdrújula' || accentType === 'sobreesdrújula') && stressedTailSyllables.length >= 3) {
-    const contractedTail = `${stressedTailSyllables[0]}${stressedTailSyllables.slice(2).join('')}`;
-    const contractedKey = normalizeRhymeChunk(contractedTail);
-    if (contractedKey) {
-      candidates.add(contractedKey);
-      const contractedWithoutRisingWeak = buildRelaxedConsonantRhymeKey(contractedTail, /(^|[^aeiouIU])([iu])([aeo])/g, '$1$3');
-      if (contractedWithoutRisingWeak) {
-        candidates.add(contractedWithoutRisingWeak);
-      }
-      const contractedWithoutFallingWeak = buildRelaxedConsonantRhymeKey(contractedTail, /([aeo])([iu])(?=[^aeiouIU]|$)/g, '$1');
-      if (contractedWithoutFallingWeak) {
-        candidates.add(contractedWithoutFallingWeak);
-      }
-    }
-  }
-
-  return [...candidates].filter(Boolean);
-}
-
-function getCanonicalConsonantRhymeKey(rawTail, lastWord) {
-  const candidates = buildConsonantRhymeCandidates(rawTail, lastWord);
-  if (!candidates.length) {
-    return '-';
-  }
-
-  const sorted = [...candidates].sort((left, right) => {
-    if (left.length !== right.length) {
-      return left.length - right.length;
-    }
-    return left.localeCompare(right);
-  });
-
-  return sorted[0] || '-';
-}
-
-function extractRhymeData(lineAnalysis) {
-  const lastWord = lineAnalysis.analyses.at(-1);
-  if (!lastWord || !lastWord.syllables.length) {
-    return {
-      consonantKey: '-',
-      assonantKey: '-',
-      finalWordKey: '-'
-    };
-  }
-
-  const normalizedWord = String(lastWord.normalized ?? '').normalize('NFC');
-  if (!normalizedWord) {
-    return {
-      consonantKey: '-',
-      assonantKey: '-',
-      finalWordKey: '-'
-    };
-  }
-
-  const stressStart = lastWord.syllables
-    .slice(0, lastWord.stressIndex)
-    .reduce((total, syllable) => total + String(syllable).length, 0);
-  const stressSyllable = String(lastWord.syllables[lastWord.stressIndex] ?? '');
-  const vowelOffset = findFirstSoundingVowelIndex(stressSyllable);
-  const start = stressStart + (vowelOffset >= 0 ? vowelOffset : 0);
-  const rawTail = normalizedWord.slice(start);
-  const consonantKey = getCanonicalConsonantRhymeKey(rawTail, lastWord);
-  const stressedTailSyllables = lastWord.syllables.slice(lastWord.stressIndex);
-  const assonantKey = stressedTailSyllables
-    .map(getAssonantVowelFromSyllable)
-    .join('') || '-';
-  const finalWordKey = normalizeValidationWord(lastWord.original || normalizedWord) || '-';
-
-  return {
-    consonantKey,
-    assonantKey,
-    finalWordKey
-  };
-}
-
 function getEffectiveRhymeMode(lineIndex) {
   const local = String(getLineOverride(lineIndex).rhymeMode ?? '').trim();
   if (local === 'asonante' || local === 'consonante' || local === 'sextina') {
     return local;
   }
   return state.rhymeMode;
-}
-
-function normalizeValidationWord(value) {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
 }
 
 function normalizeRhymeScheme(value) {
@@ -4830,7 +4644,7 @@ function getManualRhymeKey(lineIndex) {
     return '';
   }
 
-  return normalizeRhymeChunk(raw);
+  return normalizeRhymeChunk(raw, { distinguishSZInRhyme: state.distinguishSZInRhyme });
 }
 
 function getManualRhymeLabel(lineIndex) {
@@ -5536,7 +5350,7 @@ function buildLineRuntime(lineAnalysis, lineIndex) {
     ? 'Hay sinalefas forzadas sobre acento versal (amarillo). Detectar automáticamente las rompe si no están forzadas.'
     : '';
 
-  const rhymeData = extractRhymeData(lineAnalysis);
+  const rhymeData = extractRhymeData(lineAnalysis, { distinguishSZInRhyme: state.distinguishSZInRhyme });
   const mode = getEffectiveRhymeMode(lineIndex);
   const manualKey = getManualRhymeKey(lineIndex);
   const manualLabel = getManualRhymeLabel(lineIndex);

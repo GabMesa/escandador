@@ -555,3 +555,159 @@ export function isUnstressedMonosyllable(word) {
   const normalized = sanitizeWord(word);
   return UNSTRESSED_MONOSYLLABLES.has(normalized);
 }
+
+export function normalizeValidationWord(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+}
+
+export function normalizeRhymeChunk(value, options = {}) {
+  const distinguishSZInRhyme = Boolean(options?.distinguishSZInRhyme);
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/y/g, 'i')
+    .replace(/z/g, distinguishSZInRhyme ? 'z' : 's')
+    .replace(/[^a-zñü]/g, '');
+}
+
+export function findFirstSoundingVowelIndex(text) {
+  const chars = String(text ?? '');
+  for (let index = 0; index < chars.length; index += 1) {
+    const ch = chars[index];
+    if (!/[aeiouáéíóúü]/i.test(ch)) {
+      continue;
+    }
+
+    if (ch.toLowerCase() === 'u') {
+      const previous = chars[index - 1]?.toLowerCase();
+      const next = chars[index + 1]?.toLowerCase();
+      const nextIsEorI = next === 'e' || next === 'i' || next === 'é' || next === 'í';
+      if ((previous === 'g' || previous === 'q') && nextIsEorI) {
+        continue;
+      }
+    }
+
+    return index;
+  }
+
+  return -1;
+}
+
+function extractNormalizedVowels(value, options = {}) {
+  return normalizeRhymeChunk(value, options).replace(/[^aeiou]/g, '');
+}
+
+export function getAssonantVowelFromSyllable(syllable, options = {}) {
+  const vowels = extractNormalizedVowels(String(syllable ?? ''), options);
+  if (!vowels) {
+    return '';
+  }
+
+  const strong = vowels.match(/[aeo]/g);
+  if (strong?.length) {
+    return strong[strong.length - 1];
+  }
+
+  return vowels[vowels.length - 1];
+}
+
+export function buildConsonantRhymeCandidates(rawTail, lastWord, options = {}) {
+  const strictKey = normalizeRhymeChunk(rawTail, options);
+  if (!strictKey) {
+    return ['-'];
+  }
+
+  const candidates = new Set([strictKey]);
+
+  const stressSyllable = String(lastWord?.syllables?.[lastWord?.stressIndex] ?? '');
+  const remainingSyllables = Array.isArray(lastWord?.syllables)
+    ? lastWord.syllables.slice((lastWord?.stressIndex ?? 0) + 1).join('')
+    : '';
+  if (stressSyllable && !/[áéíóú]/i.test(stressSyllable)) {
+    const contractedStressSyllable = stressSyllable.replace(/([iuü])([aeo])/i, '$2');
+    if (contractedStressSyllable !== stressSyllable) {
+      const contractedStart = findFirstSoundingVowelIndex(contractedStressSyllable);
+      const contractedTail = `${contractedStressSyllable.slice(contractedStart >= 0 ? contractedStart : 0)}${remainingSyllables}`;
+      const contractedKey = normalizeRhymeChunk(contractedTail, options);
+      if (contractedKey && contractedKey !== strictKey) {
+        candidates.add(contractedKey);
+      }
+    }
+  }
+
+  const accentType = String(lastWord?.accentType ?? '');
+  const stressedTailSyllables = Array.isArray(lastWord?.syllables)
+    ? lastWord.syllables.slice(lastWord.stressIndex)
+    : [];
+  if ((accentType === 'esdrújula' || accentType === 'sobreesdrújula') && stressedTailSyllables.length >= 3) {
+    const contractedTail = `${stressedTailSyllables[0]}${stressedTailSyllables.slice(2).join('')}`;
+    const contractedKey = normalizeRhymeChunk(contractedTail, options);
+    if (contractedKey) {
+      candidates.add(contractedKey);
+    }
+  }
+
+  return [...candidates].filter(Boolean);
+}
+
+export function getCanonicalConsonantRhymeKey(rawTail, lastWord, options = {}) {
+  const candidates = buildConsonantRhymeCandidates(rawTail, lastWord, options);
+  if (!candidates.length) {
+    return '-';
+  }
+
+  const sorted = [...candidates].sort((left, right) => {
+    if (left.length !== right.length) {
+      return left.length - right.length;
+    }
+    return left.localeCompare(right);
+  });
+
+  return sorted[0] || '-';
+}
+
+export function extractRhymeData(lineAnalysis, options = {}) {
+  const lastWord = lineAnalysis?.analyses?.at(-1);
+  if (!lastWord || !lastWord.syllables?.length) {
+    return {
+      consonantKey: '-',
+      assonantKey: '-',
+      finalWordKey: '-'
+    };
+  }
+
+  const normalizedWord = String(lastWord.normalized ?? '').normalize('NFC');
+  if (!normalizedWord) {
+    return {
+      consonantKey: '-',
+      assonantKey: '-',
+      finalWordKey: '-'
+    };
+  }
+
+  const stressStart = lastWord.syllables
+    .slice(0, lastWord.stressIndex)
+    .reduce((total, syllable) => total + String(syllable).length, 0);
+  const stressSyllable = String(lastWord.syllables[lastWord.stressIndex] ?? '');
+  const vowelOffset = findFirstSoundingVowelIndex(stressSyllable);
+  const start = stressStart + (vowelOffset >= 0 ? vowelOffset : 0);
+  const rawTail = normalizedWord.slice(start);
+  const consonantKey = getCanonicalConsonantRhymeKey(rawTail, lastWord, options);
+  const stressedTailSyllables = lastWord.syllables.slice(lastWord.stressIndex);
+  const assonantKey = stressedTailSyllables
+    .map((syllable) => getAssonantVowelFromSyllable(syllable, options))
+    .join('') || '-';
+  const finalWordKey = normalizeValidationWord(lastWord.original || normalizedWord) || '-';
+
+  return {
+    consonantKey,
+    assonantKey,
+    finalWordKey
+  };
+}
