@@ -91,7 +91,6 @@ const LOCAL_POEM_COLORS_KEY = 'escandador.poemColors.v1';
 const LOCAL_RHYME_COLORS_KEY = 'escandador.rhymeColors.v1';
 const LOCAL_DEFAULT_POEM_COLOR_KEY = 'escandador.defaultPoemColor.v1';
 const LOCAL_LAST_WORKED_POEM_KEY = 'escandador.lastWorkedPoem.v1';
-const LOCAL_LOOKUP_PROXY_PREFS_KEY = 'escandador.lookupProxyPrefs.v1';
 const POEM_COLOR_COUNT = 6;
 const COLOR_PICKER_PALETTE = [
   '#e05a4d', '#e8823a', '#e7b83b', '#a7c145',
@@ -102,15 +101,9 @@ const COLOR_PICKER_PALETTE = [
 const AUTO_SAVE_DELAY_MS = 1200;
 const TRASH_RETENTION_DAYS = 10;
 const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-const LOOKUP_PROXY_PREFIXES = [
-  'https://r.jina.ai/http://',
-  'https://r.jina.ai/http://https://',
-  'https://api.allorigins.win/raw?url=',
-  'https://cors.isomorphic-git.org/'
-];
 const LOOKUP_AUTO_FETCH_DELAY_MS = 420;
 const LOOKUP_WIKTIONARY_BASE_URL = 'https://es.wiktionary.org/wiki/';
-const LOOKUP_WIKTIONARY_API_BASE_URL = 'https://es.wiktionary.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles=';
+const LOOKUP_WIKTIONARY_API_BASE_URL = 'https://es.wiktionary.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&origin=*&titles=';
 const OPEN_SYNONYMS_SOURCE_URL = 'https://cdn.jsdelivr.net/gh/edublancas/sinonimos@master/sinonimos.json';
 const OPEN_FREQUENCY_LIST_SOURCE_URL = 'https://gist.githubusercontent.com/epidemian/ebb3025e8cb25f6f4e3a/raw/aaac303d8b21eb38a65c38eaaae5fd51660f7500/es.txt';
 const OPEN_RHYME_WORDLIST_SOURCE_URL = 'https://cdn.jsdelivr.net/gh/xavier-hernandez/spanish-wordlist@main/text/spanish_words.txt';
@@ -168,7 +161,6 @@ let autoSaveTimer = null;
 let toastTimer = null;
 let selectedVersionIds = new Set();
 let lookupAutoFetchTimer = null;
-let lookupProxyPreferences = loadLookupProxyPreferences();
 let lookupWordTypeCache = loadLookupWordTypeCache();
 state.lookupVisibleWordTypes = lookupWordTypeCache;
 let openSynonymsIndex = null;
@@ -177,28 +169,6 @@ let openFrequencyIndex = null;
 let openFrequencyIndexPromise = null;
 let openRhymeLexicon = null;
 let openRhymeLexiconPromise = null;
-
-function loadLookupProxyPreferences() {
-  try {
-    const raw = localStorage.getItem(LOCAL_LOOKUP_PROXY_PREFS_KEY);
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveLookupProxyPreferences() {
-  try {
-    localStorage.setItem(LOCAL_LOOKUP_PROXY_PREFS_KEY, JSON.stringify(lookupProxyPreferences));
-  } catch {
-    // Ignore storage errors to avoid blocking lookups.
-  }
-}
 
 function loadLookupWordTypeCache() {
   try {
@@ -220,44 +190,6 @@ function saveLookupWordTypeCache() {
   } catch {
     // Ignore storage failures; classification can still run without persistence.
   }
-}
-
-function getLookupTargetHost(targetUrl) {
-  try {
-    return String(new URL(String(targetUrl ?? '')).hostname ?? '').toLowerCase() || 'default';
-  } catch {
-    return 'default';
-  }
-}
-
-function prioritizeProxyPrefixes(targetUrl) {
-  const host = getLookupTargetHost(targetUrl);
-  const preferredPrefix = String(lookupProxyPreferences?.[host] ?? '');
-  if (!preferredPrefix || !LOOKUP_PROXY_PREFIXES.includes(preferredPrefix)) {
-    return LOOKUP_PROXY_PREFIXES;
-  }
-
-  return [
-    preferredPrefix,
-    ...LOOKUP_PROXY_PREFIXES.filter((prefix) => prefix !== preferredPrefix)
-  ];
-}
-
-function setPreferredLookupProxy(targetUrl, proxyPrefix) {
-  const host = getLookupTargetHost(targetUrl);
-  if (!host || !proxyPrefix || !LOOKUP_PROXY_PREFIXES.includes(proxyPrefix)) {
-    return;
-  }
-
-  if (lookupProxyPreferences[host] === proxyPrefix) {
-    return;
-  }
-
-  lookupProxyPreferences = {
-    ...lookupProxyPreferences,
-    [host]: proxyPrefix
-  };
-  saveLookupProxyPreferences();
 }
 
 function loadPoemColors() {
@@ -1010,35 +942,6 @@ function extractWordRhymeData(word) {
   return extractRhymeData({ analyses: [analysis] });
 }
 
-function buildLookupProxyUrls(targetUrl) {
-  const originalTarget = String(targetUrl ?? '').trim();
-  const normalizedTarget = originalTarget.replace(/^https?:\/\//i, '');
-  if (!originalTarget) {
-    return [];
-  }
-
-  return prioritizeProxyPrefixes(targetUrl).map((prefix) => {
-    let proxyUrl = '';
-    if (prefix.includes('allorigins.win')) {
-      proxyUrl = `${prefix}${encodeURIComponent(originalTarget)}`;
-      return { prefix, proxyUrl };
-    }
-
-    if (prefix.endsWith('http://https://')) {
-      proxyUrl = `${prefix}${normalizedTarget}`;
-      return { prefix, proxyUrl };
-    }
-
-    if (prefix.endsWith('http://')) {
-      proxyUrl = `${prefix}${normalizedTarget}`;
-      return { prefix, proxyUrl };
-    }
-
-    proxyUrl = `${prefix}${originalTarget}`;
-    return { prefix, proxyUrl };
-  });
-}
-
 async function fetchLookupSourceText(targetUrl) {
   const errors = [];
 
@@ -1074,40 +977,7 @@ async function fetchLookupSourceText(targetUrl) {
     errors.push(`${targetUrl} -> ${String(error?.message ?? error)}`);
   }
 
-  const proxyUrls = buildLookupProxyUrls(targetUrl);
-
-  for (const candidate of proxyUrls) {
-    const proxyUrl = candidate?.proxyUrl;
-    const proxyPrefix = candidate?.prefix;
-    if (!proxyUrl) {
-      continue;
-    }
-
-    try {
-      const response = await fetch(proxyUrl, {
-        headers: {
-          Accept: 'text/plain, text/markdown;q=0.9, */*;q=0.8'
-        }
-      });
-
-      if (!response.ok) {
-        errors.push(`${proxyUrl} -> ${response.status}`);
-        continue;
-      }
-
-      const text = await decodeSourceBuffer(response);
-      if (text && text.length > 120) {
-        setPreferredLookupProxy(targetUrl, proxyPrefix);
-        return text;
-      }
-
-      errors.push(`${proxyUrl} -> respuesta vacía`);
-    } catch (error) {
-      errors.push(`${proxyUrl} -> ${String(error?.message ?? error)}`);
-    }
-  }
-
-  throw new Error(`No se pudo descargar la fuente desde los proxies configurados. ${errors[0] ?? ''}`.trim());
+  throw new Error(`No se pudo descargar la fuente directamente. ${errors[0] ?? ''}`.trim());
 }
 
 function splitOpenCorpusTerms(value) {
@@ -1995,11 +1865,6 @@ function parseWiktionaryWordTypeFromSource(sourceText) {
   }
 
   return '';
-}
-
-function isProxyFailureError(message) {
-  const text = String(message ?? '').toLowerCase();
-  return text.includes('proxies configurados') || text.includes('proxy');
 }
 
 function renderLookupResults() {
