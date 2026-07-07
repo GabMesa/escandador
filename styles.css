@@ -263,6 +263,48 @@ h1 {
   line-height: 1.45;
 }
 
+.lookup-synonym-groups {
+  margin-top: 0.5rem;
+  display: grid;
+  gap: 8px;
+}
+
+.lookup-synonym-group-card {
+  padding: 0.72rem 0.78rem;
+  border: 1px solid rgba(53, 35, 18, 0.14);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(var(--surface-rgb), 0.96), rgba(var(--surface-rgb), 0.84));
+  box-shadow: 0 8px 18px rgba(58, 37, 20, 0.05);
+}
+
+.lookup-synonym-group-title {
+  margin-bottom: 0.45rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.lookup-synonym-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lookup-synonym-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.56rem;
+  border-radius: 999px;
+  border: 1px solid rgba(49, 92, 102, 0.18);
+  background: rgba(49, 92, 102, 0.08);
+  color: var(--text);
+  font-size: 0.77rem;
+  line-height: 1.2;
+}
+
 .lookup-rhyme-list {
   margin: 0;
   padding: 0;
@@ -2538,4 +2580,26 @@ body.has-poem-theme .workspace {
     flex: 1 1 auto;
     min-width: 0;
   }
+}
+.lookup-collapsible-section summary::-webkit-details-marker {
+  display: none;
+}
+.lookup-collapsible-section summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Indicador de estado: Cerrado por defecto */
+.lookup-collapsible-section summary::before {
+  content: "►";
+  font-size: 0.7rem;
+  color: var(--text-muted, #6b7280);
+  transition: transform 0.2s ease;
+}
+
+/* Indicador de estado: Abierto */
+.lookup-collapsible-section[open] summary::before {
+  content: "▼";
 }

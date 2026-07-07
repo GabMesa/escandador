@@ -109,6 +109,11 @@ const LOOKUP_PROXY_PREFIXES = [
   'https://cors.isomorphic-git.org/'
 ];
 const LOOKUP_AUTO_FETCH_DELAY_MS = 420;
+const LOOKUP_WIKTIONARY_BASE_URL = 'https://es.wiktionary.org/wiki/';
+const LOOKUP_WIKTIONARY_API_BASE_URL = 'https://es.wiktionary.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles=';
+const OPEN_SYNONYMS_SOURCE_URL = 'https://cdn.jsdelivr.net/gh/edublancas/sinonimos@master/sinonimos.json';
+const OPEN_FREQUENCY_LIST_SOURCE_URL = 'https://gist.githubusercontent.com/epidemian/ebb3025e8cb25f6f4e3a/raw/aaac303d8b21eb38a65c38eaaae5fd51660f7500/es.txt';
+const OPEN_RHYME_WORDLIST_SOURCE_URL = 'https://cdn.jsdelivr.net/gh/xavier-hernandez/spanish-wordlist@main/text/spanish_words.txt';
 
 const state = {
   stressPattern: [],
@@ -132,6 +137,8 @@ const state = {
   currentAnalysisTitle: '',
   selectedLookupWord: '',
   lookupDefinition: '',
+  lookupFrequency: '',
+  lookupSynonyms: [],
   lookupRhymes: [],
   lookupRhymeCandidates: [],
   lookupMode: 'asonante',
@@ -150,6 +157,12 @@ let toastTimer = null;
 let selectedVersionIds = new Set();
 let lookupAutoFetchTimer = null;
 let lookupProxyPreferences = loadLookupProxyPreferences();
+let openSynonymsIndex = null;
+let openSynonymsIndexPromise = null;
+let openFrequencyIndex = null;
+let openFrequencyIndexPromise = null;
+let openRhymeLexicon = null;
+let openRhymeLexiconPromise = null;
 
 function loadLookupProxyPreferences() {
   try {
@@ -820,7 +833,7 @@ function refreshLookupBar() {
 
   if (lookupRaeBtn) {
     lookupRaeBtn.textContent = 'On change';
-    lookupRaeBtn.title = 'Definición en actualización automática';
+    lookupRaeBtn.title = 'Definición en actualización automática (Wikcionario)';
   }
 
   if (lookupExcludeCurrentBtn) {
@@ -843,8 +856,8 @@ function queueLookupAutoFetch() {
 
   lookupAutoFetchTimer = setTimeout(() => {
     lookupAutoFetchTimer = null;
-    openRaeDefinition();
-    openIedraRimasFromConfig();
+    openWiktionaryDefinition();
+    openOpenDataRhymesFromConfig();
   }, LOOKUP_AUTO_FETCH_DELAY_MS);
 }
 
@@ -856,6 +869,8 @@ function setSelectedLookupWord(rawWord) {
 
   state.selectedLookupWord = nextWord;
   state.lookupDefinition = '';
+  state.lookupFrequency = '';
+  state.lookupSynonyms = [];
   state.lookupRhymeCandidates = [];
   state.lookupRhymes = [];
   state.lookupError = '';
@@ -936,8 +951,12 @@ function normalizeLookupComparable(value) {
 
 function cleanMarkdownText(value) {
   return String(value ?? '')
+    .replace(/!\[[^\]]*\]\([^\)]+\)/g, ' ')
+    .replace(/\[editar\]/gi, ' ')
+    .replace(/\[\[?\d+\]?\]\([^\)]+\)/g, ' ')
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
     .replace(/[_*`>#]+/g, ' ')
+    .replace(/[¦|]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -985,8 +1004,29 @@ function buildLookupProxyUrls(targetUrl) {
 }
 
 async function fetchLookupSourceText(targetUrl) {
-  const proxyUrls = buildLookupProxyUrls(targetUrl);
   const errors = [];
+
+  try {
+    const directResponse = await fetch(targetUrl, {
+      headers: {
+        Accept: 'text/plain, text/markdown;q=0.9, */*;q=0.8'
+      }
+    });
+
+    if (directResponse.ok) {
+      const directText = await directResponse.text();
+      if (directText && directText.length > 120) {
+        return directText;
+      }
+      errors.push(`${targetUrl} -> respuesta vacía`);
+    } else {
+      errors.push(`${targetUrl} -> ${directResponse.status}`);
+    }
+  } catch (error) {
+    errors.push(`${targetUrl} -> ${String(error?.message ?? error)}`);
+  }
+
+  const proxyUrls = buildLookupProxyUrls(targetUrl);
 
   for (const candidate of proxyUrls) {
     const proxyUrl = candidate?.proxyUrl;
@@ -1022,74 +1062,457 @@ async function fetchLookupSourceText(targetUrl) {
   throw new Error(`No se pudo descargar la fuente desde los proxies configurados. ${errors[0] ?? ''}`.trim());
 }
 
-async function fetchIedraSourceText(targetUrl) {
-  try {
-    const direct = await fetch(targetUrl, {
-      headers: {
-        Accept: 'text/html, text/plain;q=0.9, */*;q=0.8'
-      }
-    });
-
-    if (direct.ok) {
-      const text = await direct.text();
-      if (text && text.length > 1000) {
-        return text;
-      }
-    }
-  } catch {
-    // Fall back to proxy if direct cross-origin fetch is blocked.
-  }
-
-  return fetchLookupSourceText(targetUrl);
+function splitOpenCorpusTerms(value) {
+  return String(value ?? '')
+    .replace(/[\u2013\u2014]/g, ',')
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
-function parseRaeDefinitionFromSource(sourceText) {
-  const sectionStart = sourceText.indexOf('## Definición');
-  if (sectionStart < 0) {
+function parseJsonWithLoosePayload(rawSource) {
+  const raw = String(rawSource ?? '').replace(/^\uFEFF/, '').trim();
+  if (!raw) {
+    throw new Error('La respuesta de datos abiertos está vacía.');
+  }
+
+  const directCandidate = raw;
+  const fencedCandidate = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const bracketStart = raw.indexOf('[');
+  const bracketEnd = raw.lastIndexOf(']');
+  const bracketCandidate = bracketStart >= 0 && bracketEnd > bracketStart
+    ? raw.slice(bracketStart, bracketEnd + 1).trim()
+    : '';
+  const braceStart = raw.indexOf('{');
+  const braceEnd = raw.lastIndexOf('}');
+  const braceCandidate = braceStart >= 0 && braceEnd > braceStart
+    ? raw.slice(braceStart, braceEnd + 1).trim()
+    : '';
+
+  const candidates = [directCandidate, fencedCandidate, bracketCandidate, braceCandidate].filter(Boolean);
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Intentionally keep trying with looser payload candidates.
+    }
+  }
+
+  throw new Error('No se pudo interpretar el JSON del corpus abierto.');
+}
+
+function addComparableWordToRhymeLexicon(store, rawWord) {
+  const comparable = normalizeLookupComparable(rawWord);
+  if (!comparable || comparable.length < 2) {
+    return;
+  }
+
+  const normalizedWord = String(rawWord ?? '').trim().toLowerCase();
+  for (let size = 2; size <= Math.min(5, comparable.length); size += 1) {
+    const suffix = comparable.slice(-size);
+    if (!store.has(suffix)) {
+      store.set(suffix, new Set());
+    }
+    store.get(suffix).add(normalizedWord);
+  }
+}
+
+function buildOpenSynonymsResources(sourceText) {
+  const parsed = parseJsonWithLoosePayload(sourceText);
+  const synonymGroupMap = new Map();
+
+  if (!Array.isArray(parsed)) {
+    return { synonymGroupMap };
+  }
+
+  for (const entry of parsed) {
+    if (!Array.isArray(entry) || !entry.length) {
+      continue;
+    }
+
+    const headTerms = splitOpenCorpusTerms(entry[0]);
+    const synonymTerms = entry.slice(1).flatMap(splitOpenCorpusTerms);
+    const allTerms = [...headTerms, ...synonymTerms]
+      .map((term) => ({
+        raw: String(term).trim().toLowerCase(),
+        comparable: normalizeLookupComparable(term)
+      }))
+      .filter((term) => term.comparable);
+
+    const normalizedTerms = [];
+    const seenComparables = new Set();
+    for (const term of allTerms) {
+      if (seenComparables.has(term.comparable)) {
+        continue;
+      }
+      seenComparables.add(term.comparable);
+      normalizedTerms.push(term);
+    }
+
+    if (!normalizedTerms.length) {
+      continue;
+    }
+
+    const group = normalizedTerms.map((term) => term.raw);
+    const groupKey = normalizedTerms.map((term) => term.comparable).sort().join('|');
+    if (!groupKey) {
+      continue;
+    }
+
+    for (const currentTerm of normalizedTerms) {
+      const currentComparable = currentTerm.comparable;
+      if (!currentComparable) {
+        continue;
+      }
+
+      if (!synonymGroupMap.has(currentComparable)) {
+        synonymGroupMap.set(currentComparable, []);
+      }
+
+      const current = synonymGroupMap.get(currentComparable);
+      const alreadyStored = current.some((storedGroup) => Array.isArray(storedGroup) && storedGroup._groupKey === groupKey);
+      if (alreadyStored) {
+        continue;
+      }
+
+      const renderedGroup = [...group];
+      renderedGroup._groupKey = groupKey;
+      current.push(renderedGroup);
+    }
+  }
+
+  return { synonymGroupMap };
+}
+
+function buildOpenFrequencyResources(sourceText) {
+  const lines = String(sourceText ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim().toLowerCase())
+    .filter((line) => line && line !== '...' && !line.startsWith('#'));
+
+  const index = new Map();
+  const orderedWords = [];
+  const rhymeLexicon = new Map();
+  let rank = 0;
+
+  for (const line of lines) {
+    const comparable = normalizeLookupComparable(line);
+    if (!comparable || index.has(comparable)) {
+      continue;
+    }
+
+    rank += 1;
+    index.set(comparable, rank);
+    orderedWords.push(line);
+
+    for (let size = 2; size <= Math.min(5, comparable.length); size += 1) {
+      const suffix = comparable.slice(-size);
+      if (!rhymeLexicon.has(suffix)) {
+        rhymeLexicon.set(suffix, []);
+      }
+      rhymeLexicon.get(suffix).push(line);
+    }
+  }
+
+  return { index, orderedWords, rhymeLexicon };
+}
+
+function buildOpenRhymeWordlistResources(sourceText) {
+  const words = String(sourceText ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim().toLowerCase())
+    .filter((line) => line && !line.startsWith('#'));
+
+  const rhymeLexicon = new Map();
+  const assonantLexicon = new Map();
+  const seenComparables = new Set();
+
+  for (const word of words) {
+    const comparable = normalizeLookupComparable(word);
+    if (!comparable || comparable.length < 2 || seenComparables.has(comparable)) {
+      continue;
+    }
+
+    seenComparables.add(comparable);
+    for (let size = 2; size <= Math.min(5, comparable.length); size += 1) {
+      const suffix = comparable.slice(-size);
+      if (!rhymeLexicon.has(suffix)) {
+        rhymeLexicon.set(suffix, []);
+      }
+      rhymeLexicon.get(suffix).push(word);
+    }
+
+    const assonantKey = extractWordRhymeData(word).assonantKey;
+    if (assonantKey && assonantKey !== '-') {
+      if (!assonantLexicon.has(assonantKey)) {
+        assonantLexicon.set(assonantKey, []);
+      }
+      assonantLexicon.get(assonantKey).push(word);
+    }
+  }
+
+  return { rhymeLexicon, assonantLexicon };
+}
+
+async function loadOpenSynonymsResources() {
+  if (openSynonymsIndex) {
+    return { synonymGroupMap: openSynonymsIndex };
+  }
+
+  if (!openSynonymsIndexPromise) {
+    openSynonymsIndexPromise = (async () => {
+      const sourceText = await fetchLookupSourceText(OPEN_SYNONYMS_SOURCE_URL);
+      const resources = buildOpenSynonymsResources(sourceText);
+      openSynonymsIndex = resources.synonymGroupMap;
+      return resources;
+    })().finally(() => {
+      openSynonymsIndexPromise = null;
+    });
+  }
+
+  return openSynonymsIndexPromise;
+}
+
+async function getSynonymGroupsFromOpenSource(targetWord, maxGroups = 8) {
+  const { synonymGroupMap } = await loadOpenSynonymsResources();
+  const comparable = normalizeLookupComparable(targetWord);
+  if (!comparable || !synonymGroupMap.has(comparable)) {
+    return [];
+  }
+
+  return synonymGroupMap.get(comparable).slice(0, maxGroups).map((group) => [...group]);
+}
+
+async function loadOpenFrequencyIndex() {
+  if (openFrequencyIndex) {
+    return openFrequencyIndex;
+  }
+
+  if (!openFrequencyIndexPromise) {
+    openFrequencyIndexPromise = (async () => {
+      const sourceText = await fetchLookupSourceText(OPEN_FREQUENCY_LIST_SOURCE_URL);
+      const resources = buildOpenFrequencyResources(sourceText);
+      openFrequencyIndex = resources.index;
+      return openFrequencyIndex;
+    })().finally(() => {
+      openFrequencyIndexPromise = null;
+    });
+  }
+
+  return openFrequencyIndexPromise;
+}
+
+async function getFrequencyLabelFromOpenList(targetWord) {
+  const comparable = normalizeLookupComparable(targetWord);
+  if (!comparable) {
     return '';
   }
 
-  const afterSection = sourceText.slice(sectionStart + '## Definición'.length);
-  const firstSubentry = afterSection.indexOf('\n### ');
-  const definitionBlock = firstSubentry >= 0 ? afterSection.slice(0, firstSubentry) : afterSection;
-  const senseMatches = [...definitionBlock.matchAll(/^\s*\d+\.\s+\d+\.\s+(.+)$/gm)];
-
-  if (!senseMatches.length) {
-    return cleanMarkdownText(definitionBlock).slice(0, 420);
+  const index = await loadOpenFrequencyIndex();
+  const rank = index.get(comparable);
+  if (!Number.isFinite(rank) || rank <= 0) {
+    return '';
   }
 
-  return senseMatches
-    .slice(0, 3)
-    .map((item) => cleanMarkdownText(item[1]))
-    .filter(Boolean)
-    .join(' ')
-    .trim();
+  return `Puesto aproximado #${rank} en es.txt (epidemian)`;
 }
 
-function extractIedraCandidatesFromSource(sourceText, targetWord) {
-  const matches = [
-    ...sourceText.matchAll(/\[([^\]\n]{2,})\]\(https?:\/\/iedra\.es\/palabras\/[^\)]+\)/g),
-    ...sourceText.matchAll(/<a[^>]+href=["']\/palabras\/[^"']+["'][^>]*>([^<]{2,})<\/a>/g)
-  ];
-  const targetComparable = normalizeLookupComparable(targetWord);
-  const words = [];
-
-  for (const match of matches) {
-    const raw = cleanMarkdownText(match[1] ?? match[2] ?? '');
-    const normalized = raw.replace(/-+$/g, '').trim();
-    if (!normalized) {
-      continue;
-    }
-
-    const comparable = normalizeLookupComparable(normalized);
-    if (!comparable || comparable === targetComparable) {
-      continue;
-    }
-
-    words.push(normalized);
+async function loadOpenRhymeLexicon() {
+  if (openRhymeLexicon) {
+    return openRhymeLexicon;
   }
 
-  return words;
+  if (!openRhymeLexiconPromise) {
+    openRhymeLexiconPromise = (async () => {
+      const sourceText = await fetchLookupSourceText(OPEN_RHYME_WORDLIST_SOURCE_URL);
+      const resources = buildOpenRhymeWordlistResources(sourceText);
+      openRhymeLexicon = resources;
+      return openRhymeLexicon;
+    })().finally(() => {
+      openRhymeLexiconPromise = null;
+    });
+  }
+
+  return openRhymeLexiconPromise;
+}
+
+async function getRhymeCandidatesFromWordlist(targetWord) {
+  const rhymeResources = await loadOpenRhymeLexicon();
+  const frequencyIndex = await loadOpenFrequencyIndex();
+  const targetData = extractWordRhymeData(targetWord);
+  const comparable = normalizeLookupComparable(targetWord);
+  if (!comparable) {
+    return [];
+  }
+
+  const candidates = new Set();
+  for (let size = 2; size <= Math.min(5, comparable.length); size += 1) {
+    const suffix = comparable.slice(-size);
+    const terms = rhymeResources.rhymeLexicon.get(suffix);
+    if (!terms) {
+      continue;
+    }
+
+    for (const term of terms) {
+      if (normalizeLookupComparable(term) !== comparable) {
+        candidates.add(term);
+      }
+    }
+  }
+
+  if (targetData.assonantKey && targetData.assonantKey !== '-' && rhymeResources.assonantLexicon?.has(targetData.assonantKey)) {
+    const assonantTerms = rhymeResources.assonantLexicon.get(targetData.assonantKey) ?? [];
+    for (const term of assonantTerms) {
+      if (normalizeLookupComparable(term) !== comparable) {
+        candidates.add(term);
+      }
+    }
+  }
+
+  return [...candidates].sort((left, right) => {
+    const leftRank = frequencyIndex.get(normalizeLookupComparable(left)) ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = frequencyIndex.get(normalizeLookupComparable(right)) ?? Number.MAX_SAFE_INTEGER;
+    return leftRank - rightRank;
+  });
+}
+
+function extractSpanishWiktionarySection(sourceText) {
+  const lines = String(sourceText ?? '').split(/\r?\n/);
+  const headingRegex = /^\s*(##|==)\s+/;
+  const spanishRegex = /espa(?:ñ|n)ol/i;
+
+  const start = lines.findIndex((line) => headingRegex.test(line) && spanishRegex.test(line));
+  if (start < 0) {
+    return '';
+  }
+
+  const collected = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (headingRegex.test(line) && !spanishRegex.test(line)) {
+      break;
+    }
+    collected.push(line);
+  }
+
+  return collected.join('\n');
+}
+
+function parseWiktionaryDefinitionFromSource(sourceText) {
+  const section = extractSpanishWiktionarySection(sourceText) || String(sourceText ?? '');
+  const nounStart = section.search(/sustantivo\s+femenino|sustantivo/i);
+  const nounSection = nounStart >= 0 ? section.slice(nounStart) : section;
+  const cleanedLines = nounSection
+    .split(/\r?\n/)
+    .map((line) => cleanMarkdownText(line))
+    .filter(Boolean);
+
+  const senseStart = cleanedLines.findIndex((line) => /^1\b/.test(line) || line === '1');
+  if (senseStart >= 0) {
+    const pieces = [];
+    for (let index = senseStart; index < cleanedLines.length; index += 1) {
+      const line = cleanedLines[index];
+      if (index > senseStart && /^\d+\b/.test(line)) {
+        break;
+      }
+      if (line === '1') {
+        continue;
+      }
+      pieces.push(line.replace(/^1\s*/, ''));
+    }
+
+    const candidate = cleanMarkdownText(pieces.join(' ')).slice(0, 420).trim();
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  const bulletMatches = [...section.matchAll(/^\s*#\s+(.+)$/gm)];
+  const numberedMarkdownMatches = [...section.matchAll(/^\s*-\s*\*\*\d+[^*]*\*\*\s*(.+)$/gm)];
+  const sourceMatches = bulletMatches.length ? bulletMatches : numberedMarkdownMatches;
+
+  if (sourceMatches.length) {
+    return sourceMatches
+      .slice(0, 3)
+      .map((item) => cleanMarkdownText(item[1]))
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+  }
+
+  const linkedInlineSense = nounSection.match(/\b1\s*\[([^\]]+)\]\([^\)]+\)\s*([\s\S]*?)(?=\b2\s+|####|###|$)/i);
+  if (linkedInlineSense) {
+    const merged = `${linkedInlineSense[1]} ${linkedInlineSense[2]}`;
+    const cleaned = cleanMarkdownText(merged).slice(0, 420).trim();
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  const numericSense = nounSection.match(/\b1\b([\s\S]*?)(?=\b2\s+|####|###|$)/i);
+  if (numericSense?.[1]) {
+    const cleaned = cleanMarkdownText(numericSense[1]).slice(0, 420).trim();
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  const plainInlineSense = nounSection.match(/\b1\s+([\s\S]*?)(?=\b2\s+|####|###|$)/i);
+  if (plainInlineSense?.[1]) {
+    const cleaned = cleanMarkdownText(plainInlineSense[1]).slice(0, 420).trim();
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  const cleanedSection = cleanMarkdownText(section);
+  const inlineSense = cleanedSection.match(/\b1\s+(.+?)(?=\b2\s+|\bLocuciones\b|\bVéase también\b|\bTraducciones\b|\bEtimología\b|$)/i);
+  if (inlineSense?.[1]) {
+    return inlineSense[1].trim();
+  }
+
+  const fallback = cleanedSection
+    .replace(/^(Title|URL Source|Markdown Content):\s*/gi, '')
+    .slice(0, 420);
+  return fallback;
+}
+
+async function fetchWiktionaryExtractText(targetWord) {
+  const apiUrl = `${LOOKUP_WIKTIONARY_API_BASE_URL}${encodeURIComponent(targetWord)}&format=json`;
+  const sourceText = await fetchLookupSourceText(apiUrl);
+  const parsed = parseJsonWithLoosePayload(sourceText);
+  const pages = parsed?.query?.pages;
+  if (!pages || typeof pages !== 'object') {
+    return '';
+  }
+
+  const firstPage = Object.values(pages)[0];
+  return String(firstPage?.extract ?? '');
+}
+
+function parseWiktionaryFrequencyFromSource(sourceText) {
+  const section = extractSpanishWiktionarySection(sourceText) || String(sourceText ?? '');
+  const explicit = section.match(/frecuenc[^\n]{0,100}/i);
+  if (explicit?.[0]) {
+    return cleanMarkdownText(explicit[0]).slice(0, 140);
+  }
+
+  const usageLabel = section.match(/uso\s+com[uú]n|muy\s+usad[ao]|poco\s+usad[ao]/i);
+  if (usageLabel?.[0]) {
+    return cleanMarkdownText(usageLabel[0]).slice(0, 140);
+  }
+
+  return '';
 }
 
 function filterRhymesByMode(targetWord, candidates, mode, syllableFilter = 'all', excludedComparables = null, excludedConsonantKeys = null) {
@@ -1276,76 +1699,96 @@ function renderLookupResults() {
     return;
   }
 
-  const hasWord = Boolean(state.selectedLookupWord);
-  if (!hasWord) {
-    lookupResults.innerHTML = '<p class="lookup-empty">Selecciona o escribe una palabra para consultar definición y rimas.</p><p class="lookup-attribution">Información basada en <a id="lookupRaeLink" href="https://dle.rae.es/" target="_blank" rel="noopener noreferrer">RAE</a> y <a id="lookupIedraLink" href="https://iedra.es/" target="_blank" rel="noopener noreferrer">Iedra</a>.</p>';
+  if (!state.selectedLookupWord) {
+    lookupResults.innerHTML = '<p class="lookup-definition lookup-empty-hint">Haz doble clic en una palabra del poema analizado o selecciónala para ver su definición, sinónimos y rimas.</p>';
     return;
   }
 
-  const modeLabel = state.lookupMode === 'consonante'
-    ? 'consonante'
-    : state.lookupMode === 'sextina'
-      ? 'sextina'
-      : 'asonante';
+  const definitionText = state.lookupDefinition
+    ? state.lookupDefinition.trim()
+    : 'No se encontró definición en Wikcionario para esta palabra.';
+  const frequencyText = state.lookupFrequency
+    ? state.lookupFrequency.trim()
+    : 'No hay etiqueta de frecuencia disponible en la entrada de Wikcionario.';
+  const synonymsHtml = Array.isArray(state.lookupSynonyms) && state.lookupSynonyms.length
+    ? state.lookupSynonyms
+      .map((group, index) => {
+        const words = Array.isArray(group)
+          ? group.map((word) => escapeHtml(String(word))).filter(Boolean)
+          : [];
+        if (!words.length) {
+          return '';
+        }
+        return `
+          <div class="lookup-synonym-group-card">
+            <div class="lookup-synonym-group-title">Grupo ${index + 1}</div>
+            <div class="lookup-synonym-chips">
+              ${words.map((word) => `<span class="lookup-synonym-chip">${word}</span>`).join('')}
+            </div>
+          </div>
+        `;
+      })
+      .filter(Boolean)
+      .join('')
+    : '<p class="lookup-definition">No se encontraron sinónimos en el corpus abierto configurado para esta palabra.</p>';
+  const selectedWordEncoded = encodeURIComponent(state.selectedLookupWord);
+  const corroborationLinks = state.selectedLookupWord
+    ? `<p class="lookup-definition" style="margin-top: 0.35rem;">
+        <a href="https://dle.rae.es/${selectedWordEncoded}" target="_blank" rel="noopener noreferrer">Abrir en RAE</a>
+        ·
+        <a href="https://iedra.es/rimas/${selectedWordEncoded}" target="_blank" rel="noopener noreferrer">Abrir en IEDRA</a>
+      </p>`
+    : '';
 
-  const definitionText = state.lookupLoadingDefinition
-    ? 'Buscando definición en la RAE...'
-    : state.lookupDefinition || 'La definición se descarga automáticamente al seleccionar o escribir una palabra.';
+  const mode = rhymeMode?.value === 'consonante' ? 'consonante' : rhymeMode?.value === 'sextina' ? 'sextina' : 'asonante';
 
-  const rhymesText = state.lookupLoadingRhymes
-    ? '<li>Cargando rimas de Iedra...</li>'
-    : state.lookupRhymes.length
-      ? state.lookupRhymes
-          .map((item) => `
-            <li>
-              <span class="lookup-rhyme-word">${escapeHtml(item)}</span>
-              ${isAsonanteRhymeMode() ? `<button type="button" class="lookup-rhyme-use-btn" data-action="add-lookup-excluded-word" data-word="${escapeHtml(item)}" title="Marcar '${escapeHtml(item)}' como ya usada para que no se repita" aria-label="Marcar '${escapeHtml(item)}' como ya usada">x</button>` : ''}
-            </li>
-          `)
-          .join('')
-      : '<li>Las rimas se descargan y filtran automáticamente según configuración y sílabas.</li>';
-
+  const filteredList = state.lookupRhymes && state.lookupRhymes.length > 0 ? state.lookupRhymes
+    .map((item) => `
+      <li>
+        <span>${escapeHtml(item)}</span>
+        ${isAsonanteRhymeMode() ? `<button type="button" class="lookup-rhyme-use-btn" data-action="add-lookup-excluded-word" data-word="${escapeHtml(item)}" title="Marcar '${escapeHtml(item)}' como ya usada para que no se repita" aria-label="Marcar '${escapeHtml(item)}' como ya usada">x</button>` : ''}
+      </li>
+    `)
+    .join('') : '<li>No se encontraron rimas con los filtros actuales y el corpus abierto cargado.</li>';
 
   const loaderVisible = state.lookupLoadingDefinition || state.lookupLoadingRhymes;
-  const loaderBlock = loaderVisible
-    ? '<p class="lookup-loader"><span class="lookup-spinner" aria-hidden="true"></span>Cargando información desde las fuentes...</p>'
-    : '';
-
-  const errorLine = state.lookupError
-    ? `<p class="lookup-definition">${escapeHtml(state.lookupError)}</p>`
-    : '';
-
-  const raeUrl = `https://dle.rae.es/${encodeURIComponent(state.selectedLookupWord)}`;
-  const iedraUrl = `https://iedra.es/rimas/${encodeURIComponent(state.selectedLookupWord)}`;
-  const directLinksFallback = isProxyFailureError(state.lookupError)
-    ? `<p class="lookup-definition">Si los proxys fallan, abre directo: <a href="${escapeHtml(raeUrl)}" target="_blank" rel="noopener noreferrer">RAE</a> · <a href="${escapeHtml(iedraUrl)}" target="_blank" rel="noopener noreferrer">Iedra</a>.</p>`
-    : '';
+  const loaderBlock = loaderVisible ? '<p class="lookup-loader"><span class="lookup-spinner" aria-hidden="true"></span>Cargando información desde las fuentes...</p>' : '';
+  const errorLine = state.lookupError ? `<p class="lookup-definition">${escapeHtml(state.lookupError)}</p>` : '';
 
   lookupResults.innerHTML = `
-    <div class="lookup-section">
-      <strong>Definición (RAE)</strong>
-      </div>
-      <p class="lookup-definition">${escapeHtml(definitionText)}</p>
-    </div>
-    <div class="lookup-section">
-      <strong>Rimas filtradas (${escapeHtml(modeLabel)})</strong>
-      </div>
-      <div class="lookup-filter-row">
-        <label for="lookupSyllableFilter" class="quick-control-label">Sílabas</label>
-        <select id="lookupSyllableFilter" title="Filtra rimas por cantidad de sílabas.">
-          ${buildLookupSyllableFilterOptions(state.lookupSyllableFilter)}
-        </select>
-      </div>
-      <ul class="lookup-rhyme-list">${rhymesText}</ul>
-    </div>
     ${loaderBlock}
     ${errorLine}
-    ${directLinksFallback}
-    <p class="lookup-attribution">Información descargada desde <a href="${escapeHtml(raeUrl)}" target="_blank" rel="noopener noreferrer">RAE</a> y <a href="${escapeHtml(iedraUrl)}" target="_blank" rel="noopener noreferrer">Iedra</a>. La presentación y filtrado se realiza en esta aplicación.</p>
+    
+    <div class="lookup-section">
+      <strong>Definición (Wikcionario)</strong>
+    </div>
+    <p class="lookup-definition">${escapeHtml(definitionText)}</p>
+    <p class="lookup-definition" style="margin-top: 0.35rem;"><strong>Frecuencia:</strong> ${escapeHtml(frequencyText)}</p>
+    ${corroborationLinks}
+
+    <details class="lookup-collapsible-section" open>
+      <summary class="lookup-section" style="cursor: pointer; list-style: max-content;">
+        <strong>Sinónimos</strong>
+      </summary>
+      <div class="lookup-synonym-groups">${synonymsHtml}</div>
+    </details>
+
+    <details class="lookup-collapsible-section" open>
+      <summary class="lookup-section" style="cursor: pointer; list-style: max-content; margin-top: 1rem;">
+        <strong>Rimas filtradas (${mode})</strong>
+      </summary>
+      <ul class="lookup-rhyme-list" style="margin-top: 0.5rem;">
+        ${filteredList}
+      </ul>
+    </details>
+
+    <div class="lookup-credit" style="font-size: 0.75rem; color: var(--text-muted, #6b7280); margin-top: 1.5rem; padding-top: 0.5rem; border-top: 1px dashed rgba(127,127,127,0.2);">
+      Definiciones desde <a href="https://es.wiktionary.org/" target="_blank" rel="noopener noreferrer">Wikcionario</a>. Frecuencia desde <a href="https://gist.github.com/epidemian/ebb3025e8cb25f6f4e3a" target="_blank" rel="noopener noreferrer">es.txt (epidemian)</a>. Rimas desde <a href="https://raw.githubusercontent.com/xavier-hernandez/spanish-wordlist/refs/heads/main/text/spanish_words.txt" target="_blank" rel="noopener noreferrer">spanish-wordlist</a>. Sinónimos desde <a href="https://github.com/edublancas/sinonimos" target="_blank" rel="noopener noreferrer">edublancas/sinonimos</a>. Corroboración rápida en <a href="https://dle.rae.es/" target="_blank" rel="noopener noreferrer">RAE</a> y <a href="https://iedra.es/rimas/" target="_blank" rel="noopener noreferrer">IEDRA</a>.
+    </div>
   `;
 }
 
-async function openRaeDefinition() {
+async function openWiktionaryDefinition() {
   if (!state.selectedLookupWord) {
     return;
   }
@@ -1357,21 +1800,52 @@ async function openRaeDefinition() {
   renderLookupResults();
 
   try {
-    const targetWord = encodeURIComponent(state.selectedLookupWord);
-    const sourceText = await fetchLookupSourceText(`https://dle.rae.es/${targetWord}`);
+    let sourceText = '';
+
+    try {
+      sourceText = await fetchWiktionaryExtractText(state.selectedLookupWord);
+    } catch (error) {
+      if (requestId !== state.lookupDefinitionRequestId) {
+        return;
+      }
+
+      state.lookupDefinition = 'No se pudo consultar Wikcionario para esta palabra.';
+      state.lookupError = `Error al consultar Wikcionario: ${String(error?.message ?? error)}`;
+    }
+
     if (requestId !== state.lookupDefinitionRequestId) {
       return;
     }
 
-    state.lookupDefinition = parseRaeDefinitionFromSource(sourceText);
-    if (!state.lookupDefinition) {
-      state.lookupDefinition = 'No se pudo extraer la definición principal desde la fuente.';
+    if (sourceText) {
+      state.lookupDefinition = parseWiktionaryDefinitionFromSource(sourceText);
+      if (!state.lookupDefinition) {
+        state.lookupDefinition = 'No se pudo extraer la definición principal desde la fuente.';
+      }
+    }
+
+    const [synonymsResult, frequencyResult] = await Promise.allSettled([
+      getSynonymGroupsFromOpenSource(state.selectedLookupWord),
+      getFrequencyLabelFromOpenList(state.selectedLookupWord)
+    ]);
+    if (requestId !== state.lookupDefinitionRequestId) {
+      return;
+    }
+
+    if (synonymsResult.status === 'fulfilled') {
+      state.lookupSynonyms = synonymsResult.value;
+    }
+
+    if (frequencyResult.status === 'fulfilled' && frequencyResult.value) {
+      state.lookupFrequency = frequencyResult.value;
+    } else if (sourceText) {
+      state.lookupFrequency = parseWiktionaryFrequencyFromSource(sourceText);
     }
   } catch (error) {
     if (requestId !== state.lookupDefinitionRequestId) {
       return;
     }
-    state.lookupError = `Error al consultar RAE: ${String(error?.message ?? error)}`;
+    state.lookupError = `Error al consultar Wikcionario/datos abiertos: ${String(error?.message ?? error)}`;
   } finally {
     if (requestId === state.lookupDefinitionRequestId) {
       state.lookupLoadingDefinition = false;
@@ -1380,7 +1854,7 @@ async function openRaeDefinition() {
   }
 }
 
-async function openIedraRimasFromConfig() {
+async function openOpenDataRhymesFromConfig() {
   if (!state.selectedLookupWord) {
     return;
   }
@@ -1398,23 +1872,22 @@ async function openIedraRimasFromConfig() {
   renderLookupResults();
 
   try {
-    const targetWord = encodeURIComponent(state.selectedLookupWord);
-    const sourceText = await fetchIedraSourceText(`https://iedra.es/rimas/${targetWord}`);
+    const candidates = await getRhymeCandidatesFromWordlist(state.selectedLookupWord);
     if (requestId !== state.lookupRhymeRequestId) {
       return;
     }
 
-    state.lookupRhymeCandidates = extractIedraCandidatesFromSource(sourceText, state.selectedLookupWord);
+    state.lookupRhymeCandidates = candidates;
     recomputeLookupRhymes();
 
     if (!state.lookupRhymes.length) {
-      state.lookupError = `No se encontraron rimas ${configuredRhymeMode} tras filtrar las palabras descargadas.`;
+      state.lookupError = `No se encontraron rimas ${configuredRhymeMode} con el corpus abierto cargado.`;
     }
   } catch (error) {
     if (requestId !== state.lookupRhymeRequestId) {
       return;
     }
-    state.lookupError = `Error al consultar Iedra: ${String(error?.message ?? error)}`;
+    state.lookupError = `Error al consultar corpus abierto de rimas: ${String(error?.message ?? error)}`;
   } finally {
     if (requestId === state.lookupRhymeRequestId) {
       state.lookupLoadingRhymes = false;
@@ -4481,6 +4954,7 @@ function buildMetricSegmentData(lineAnalysis, activeBoundaries, hemistichBoundar
   const segments = [];
   const segmentBoundaries = [-1, ...hemistichBoundaries, lineAnalysis.analyses.length - 1];
   let cumulativeMetricOffset = 0;
+  let cumulativeMetricTotal = 0;
 
   for (let idx = 0; idx < segmentBoundaries.length - 1; idx += 1) {
     const startBoundary = segmentBoundaries[idx];
@@ -4505,10 +4979,12 @@ function buildMetricSegmentData(lineAnalysis, activeBoundaries, hemistichBoundar
       metric,
       bonus,
       offsetBefore: cumulativeMetricOffset,
+      metricOffsetBefore: cumulativeMetricTotal,
       accentType
     });
 
     cumulativeMetricOffset += bonus;
+    cumulativeMetricTotal += metric;
   }
 
   return segments;
@@ -5049,8 +5525,8 @@ function renderPositionTrack(runtime) {
   if (runtime.hasHemistich && runtime.segments.length > 1) {
     const segmentTracks = runtime.segments
       .map((segment) => {
-        const start = segment.offsetBefore + 1;
-        const end = segment.offsetBefore + segment.metric;
+        const start = segment.metricOffsetBefore + 1;
+        const end = segment.metricOffsetBefore + segment.metric;
         const segmentPositions = merged.filter((position) => position >= start && position <= end);
 
         if (!segmentPositions.length) {
@@ -5058,7 +5534,7 @@ function renderPositionTrack(runtime) {
         }
 
         return segmentPositions
-          .map((position) => renderPositionToken(position, segment.offsetBefore))
+          .map((position) => renderPositionToken(position, segment.metricOffsetBefore))
           .join('-');
       })
       .filter(Boolean);
@@ -5351,8 +5827,8 @@ panelViewMode?.addEventListener('change', () => {
   applyPanelViewMode();
   saveUiPreferences();
 });
-lookupRaeBtn?.addEventListener('click', openRaeDefinition);
-lookupRimasBtn?.addEventListener('click', openIedraRimasFromConfig);
+lookupRaeBtn?.addEventListener('click', openWiktionaryDefinition);
+lookupRimasBtn?.addEventListener('click', openOpenDataRhymesFromConfig);
 poemInput?.addEventListener('mouseup', syncLookupWordFromPoemInput);
 poemInput?.addEventListener('keyup', syncLookupWordFromPoemInput);
 analysisOutput?.addEventListener('mouseup', syncLookupWordFromAnalysisSelection);
@@ -5412,8 +5888,8 @@ selectedLookupWord?.addEventListener('keydown', (event) => {
   }
 
   event.preventDefault();
-  openRaeDefinition();
-  openIedraRimasFromConfig();
+  openWiktionaryDefinition();
+  openOpenDataRhymesFromConfig();
 });
 
 colorPickerSwatches?.addEventListener('click', (event) => {
