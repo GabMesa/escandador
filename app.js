@@ -4431,6 +4431,31 @@ function normalizeRhymeChunk(value) {
     .replace(/[^a-zñü]/g, '');
 }
 
+function protectHiatusWeakVowels(value) {
+  return stripSilentQGU(String(value ?? '').toLowerCase())
+    .normalize('NFD')
+    .replace(/i\u0301/g, 'I')
+    .replace(/u\u0301/g, 'U')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function restoreProtectedWeakVowels(value) {
+  return String(value ?? '')
+    .replace(/I/g, 'i')
+    .replace(/U/g, 'u');
+}
+
+function buildRelaxedConsonantRhymeKey(rawTail, pattern, replacement) {
+  const protectedTail = protectHiatusWeakVowels(rawTail);
+  const relaxedTail = protectedTail.replace(pattern, replacement);
+
+  if (!relaxedTail || relaxedTail === protectedTail) {
+    return '';
+  }
+
+  return normalizeRhymeChunk(restoreProtectedWeakVowels(relaxedTail));
+}
+
 function extractNormalizedVowels(value) {
   return normalizeRhymeChunk(value).replace(/[^aeiou]/g, '');
 }
@@ -4458,12 +4483,12 @@ function buildConsonantRhymeCandidates(rawTail, lastWord) {
   const candidates = new Set([strictKey]);
 
   // Poetic license: in rhyme zone, weak vowels in diphthongs may be omitted.
-  const withoutRisingWeak = strictKey.replace(/(^|[^aeiou])([iu])([aeo])/g, '$1$3');
+  const withoutRisingWeak = buildRelaxedConsonantRhymeKey(rawTail, /(^|[^aeiouIU])([iu])([aeo])/g, '$1$3');
   if (withoutRisingWeak && withoutRisingWeak !== strictKey) {
     candidates.add(withoutRisingWeak);
   }
 
-  const withoutFallingWeak = strictKey.replace(/([aeo])([iu])(?=[^aeiou]|$)/g, '$1');
+  const withoutFallingWeak = buildRelaxedConsonantRhymeKey(rawTail, /([aeo])([iu])(?=[^aeiouIU]|$)/g, '$1');
   if (withoutFallingWeak && withoutFallingWeak !== strictKey) {
     candidates.add(withoutFallingWeak);
   }
@@ -4479,11 +4504,11 @@ function buildConsonantRhymeCandidates(rawTail, lastWord) {
     const contractedKey = normalizeRhymeChunk(contractedTail);
     if (contractedKey) {
       candidates.add(contractedKey);
-      const contractedWithoutRisingWeak = contractedKey.replace(/(^|[^aeiou])([iu])([aeo])/g, '$1$3');
+      const contractedWithoutRisingWeak = buildRelaxedConsonantRhymeKey(contractedTail, /(^|[^aeiouIU])([iu])([aeo])/g, '$1$3');
       if (contractedWithoutRisingWeak) {
         candidates.add(contractedWithoutRisingWeak);
       }
-      const contractedWithoutFallingWeak = contractedKey.replace(/([aeo])([iu])(?=[^aeiou]|$)/g, '$1');
+      const contractedWithoutFallingWeak = buildRelaxedConsonantRhymeKey(contractedTail, /([aeo])([iu])(?=[^aeiouIU]|$)/g, '$1');
       if (contractedWithoutFallingWeak) {
         candidates.add(contractedWithoutFallingWeak);
       }
