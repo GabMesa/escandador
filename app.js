@@ -89,6 +89,7 @@ const LOCAL_POEM_COLORS_KEY = 'escandador.poemColors.v1';
 const LOCAL_RHYME_COLORS_KEY = 'escandador.rhymeColors.v1';
 const LOCAL_DEFAULT_POEM_COLOR_KEY = 'escandador.defaultPoemColor.v1';
 const LOCAL_LAST_WORKED_POEM_KEY = 'escandador.lastWorkedPoem.v1';
+const LOCAL_LOOKUP_PROXY_PREFS_KEY = 'escandador.lookupProxyPrefs.v1';
 const POEM_COLOR_COUNT = 6;
 const COLOR_PICKER_PALETTE = [
   '#e05a4d', '#e8823a', '#e7b83b', '#a7c145',
@@ -145,6 +146,67 @@ let autoSaveTimer = null;
 let toastTimer = null;
 let selectedVersionIds = new Set();
 let lookupAutoFetchTimer = null;
+let lookupProxyPreferences = loadLookupProxyPreferences();
+
+function loadLookupProxyPreferences() {
+  try {
+    const raw = localStorage.getItem(LOCAL_LOOKUP_PROXY_PREFS_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLookupProxyPreferences() {
+  try {
+    localStorage.setItem(LOCAL_LOOKUP_PROXY_PREFS_KEY, JSON.stringify(lookupProxyPreferences));
+  } catch {
+    // Ignore storage errors to avoid blocking lookups.
+  }
+}
+
+function getLookupTargetHost(targetUrl) {
+  try {
+    return String(new URL(String(targetUrl ?? '')).hostname ?? '').toLowerCase() || 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+function prioritizeProxyPrefixes(targetUrl) {
+  const host = getLookupTargetHost(targetUrl);
+  const preferredPrefix = String(lookupProxyPreferences?.[host] ?? '');
+  if (!preferredPrefix || !LOOKUP_PROXY_PREFIXES.includes(preferredPrefix)) {
+    return LOOKUP_PROXY_PREFIXES;
+  }
+
+  return [
+    preferredPrefix,
+    ...LOOKUP_PROXY_PREFIXES.filter((prefix) => prefix !== preferredPrefix)
+  ];
+}
+
+function setPreferredLookupProxy(targetUrl, proxyPrefix) {
+  const host = getLookupTargetHost(targetUrl);
+  if (!host || !proxyPrefix || !LOOKUP_PROXY_PREFIXES.includes(proxyPrefix)) {
+    return;
+  }
+
+  if (lookupProxyPreferences[host] === proxyPrefix) {
+    return;
+  }
+
+  lookupProxyPreferences = {
+    ...lookupProxyPreferences,
+    [host]: proxyPrefix
+  };
+  saveLookupProxyPreferences();
+}
 
 function loadPoemColors() {
   try {
@@ -892,20 +954,25 @@ function buildLookupProxyUrls(targetUrl) {
     return [];
   }
 
-  return LOOKUP_PROXY_PREFIXES.map((prefix) => {
+  return prioritizeProxyPrefixes(targetUrl).map((prefix) => {
+    let proxyUrl = '';
     if (prefix.includes('allorigins.win')) {
-      return `${prefix}${encodeURIComponent(originalTarget)}`;
+      proxyUrl = `${prefix}${encodeURIComponent(originalTarget)}`;
+      return { prefix, proxyUrl };
     }
 
     if (prefix.endsWith('http://https://')) {
-      return `${prefix}${normalizedTarget}`;
+      proxyUrl = `${prefix}${normalizedTarget}`;
+      return { prefix, proxyUrl };
     }
 
     if (prefix.endsWith('http://')) {
-      return `${prefix}${normalizedTarget}`;
+      proxyUrl = `${prefix}${normalizedTarget}`;
+      return { prefix, proxyUrl };
     }
 
-    return `${prefix}${originalTarget}`;
+    proxyUrl = `${prefix}${originalTarget}`;
+    return { prefix, proxyUrl };
   });
 }
 
@@ -913,7 +980,13 @@ async function fetchLookupSourceText(targetUrl) {
   const proxyUrls = buildLookupProxyUrls(targetUrl);
   const errors = [];
 
-  for (const proxyUrl of proxyUrls) {
+  for (const candidate of proxyUrls) {
+    const proxyUrl = candidate?.proxyUrl;
+    const proxyPrefix = candidate?.prefix;
+    if (!proxyUrl) {
+      continue;
+    }
+
     try {
       const response = await fetch(proxyUrl, {
         headers: {
@@ -928,6 +1001,7 @@ async function fetchLookupSourceText(targetUrl) {
 
       const text = await response.text();
       if (text && text.length > 120) {
+        setPreferredLookupProxy(targetUrl, proxyPrefix);
         return text;
       }
 
