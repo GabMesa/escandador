@@ -62,17 +62,13 @@ body {
   letter-spacing: 0.01em;
   word-spacing: 0.04em;
   color: var(--text);
-  background:
-    radial-gradient(circle at 12% 8%, var(--poem-glow-1, transparent), transparent 42%),
-    radial-gradient(circle at 88% 6%, var(--poem-glow-2, transparent), transparent 40%),
-    radial-gradient(circle at top left, rgba(139, 77, 44, 0.18), transparent 34%),
-    radial-gradient(circle at right 20%, rgba(49, 92, 102, 0.12), transparent 30%),
-    linear-gradient(180deg, var(--bg), var(--bg-2));
+  background: var(--bg);
   background-attachment: fixed;
   transition: background 260ms ease;
 }
 
 body.has-poem-theme {
+  --bg: color-mix(in srgb, var(--poem-color) 18%, #efe7db);
   --poem-glow-1: color-mix(in srgb, var(--poem-color) 40%, transparent);
   --poem-glow-2: color-mix(in srgb, var(--poem-color) 26%, transparent);
   --poem-surface: color-mix(in srgb, var(--poem-color) 14%, transparent);

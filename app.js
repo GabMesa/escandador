@@ -19,6 +19,7 @@ const stanzaSummaryBadge = document.getElementById('stanzaSummaryBadge');
 const rhymeSchemeBadge = document.getElementById('rhymeSchemeBadge');
 const poemTitle = document.getElementById('poemTitle');
 const savePoem = document.getElementById('savePoem');
+const currentPoemColorBtn = document.getElementById('currentPoemColorBtn');
 const newPoemTop = document.getElementById('newPoemTop');
 const newPoemManager = document.getElementById('newPoemManager');
 const defaultPoemColorBtn = document.getElementById('defaultPoemColorBtn');
@@ -205,6 +206,20 @@ function updateDefaultColorButton() {
   }
 }
 
+function updateCurrentPoemColorButton(activeTitle = '') {
+  if (!currentPoemColorBtn) {
+    return;
+  }
+
+  const title = normalizePoemTitle(activeTitle || poemTitle?.value || savedPoemName?.value || state.currentAnalysisTitle || '');
+  const savedColor = loadPoemColors()[title];
+  const colorHex = isHexColor(savedColor) ? String(savedColor).trim() : getPoemColorHex(0);
+
+  currentPoemColorBtn.style.background = colorHex;
+  currentPoemColorBtn.style.borderColor = toRgba(colorHex, 0.45);
+  currentPoemColorBtn.dataset.title = title;
+}
+
 function applyPoemScreenTheme(poemTitle) {
   const normalizedTitle = normalizePoemTitle(poemTitle);
   const stored = normalizedTitle ? loadPoemColors()[normalizedTitle] : '';
@@ -217,6 +232,8 @@ function applyPoemScreenTheme(poemTitle) {
     document.documentElement.style.removeProperty('--poem-color');
     document.body.classList.remove('has-poem-theme');
   }
+
+  updateCurrentPoemColorButton(normalizedTitle);
 }
 
 function applyPoemColorTheme(node, colorValue, fallbackIndex = 0) {
@@ -436,6 +453,65 @@ function removeRhymeColor(poemTitle, label) {
   }
 
   delete poemStore.colors[key];
+  saveRhymeColors(store);
+}
+
+function renamePoemColorKey(sourceTitle, targetTitle) {
+  const fromTitle = normalizePoemTitle(sourceTitle);
+  const toTitle = normalizePoemTitle(targetTitle);
+  if (!fromTitle || !toTitle || fromTitle === toTitle) {
+    return;
+  }
+
+  try {
+    const colors = loadPoemColors();
+    const hasSource = Object.prototype.hasOwnProperty.call(colors, fromTitle);
+    const hasTarget = Object.prototype.hasOwnProperty.call(colors, toTitle);
+    if (!hasSource) {
+      return;
+    }
+
+    if (!hasTarget) {
+      colors[toTitle] = colors[fromTitle];
+    }
+
+    delete colors[fromTitle];
+    localStorage.setItem(LOCAL_POEM_COLORS_KEY, JSON.stringify(colors));
+  } catch {
+    // Ignore storage errors to avoid blocking rename flows.
+  }
+}
+
+function renameRhymeColorStoreKey(sourceTitle, targetTitle) {
+  const fromTitle = normalizePoemTitle(sourceTitle);
+  const toTitle = normalizePoemTitle(targetTitle);
+  if (!fromTitle || !toTitle || fromTitle === toTitle) {
+    return;
+  }
+
+  const store = loadRhymeColors();
+  const fromStore = store[fromTitle];
+  if (!fromStore || typeof fromStore !== 'object') {
+    return;
+  }
+
+  const targetStore = store[toTitle] && typeof store[toTitle] === 'object'
+    ? store[toTitle]
+    : { nextIndex: 0, colors: {} };
+
+  const targetColors = targetStore.colors && typeof targetStore.colors === 'object' ? targetStore.colors : {};
+  const fromColors = fromStore.colors && typeof fromStore.colors === 'object' ? fromStore.colors : {};
+
+  for (const [label, colorHex] of Object.entries(fromColors)) {
+    if (!Object.prototype.hasOwnProperty.call(targetColors, label) && isHexColor(colorHex)) {
+      targetColors[label] = colorHex;
+    }
+  }
+
+  targetStore.colors = targetColors;
+  targetStore.nextIndex = Math.max(Number(targetStore.nextIndex) || 0, Number(fromStore.nextIndex) || 0);
+  store[toTitle] = targetStore;
+  delete store[fromTitle];
   saveRhymeColors(store);
 }
 
@@ -1790,6 +1866,12 @@ function saveCurrentPoemVersion(options = {}) {
   }
   setPoemTitleDisplay(title);
 
+  const loadedTitle = normalizePoemTitle(state.loadedVersionTitle ?? '');
+  const loadedVersionId = String(state.loadedVersionId ?? '').trim();
+  if (loadedTitle && loadedVersionId && loadedTitle !== title) {
+    renamePoemTitleInline(loadedTitle, title);
+  }
+
   const store = loadPoemMemoryStore();
   if (!Array.isArray(store.poems[title])) {
     store.poems[title] = [];
@@ -2102,6 +2184,15 @@ function renamePoemTitleInline(currentTitle, nextTitleRaw) {
     return false;
   }
 
+  const selectedTitleBefore = String(savedPoemName?.value ?? '').trim();
+  const selectedVersionBefore = String(savedPoemVersion?.value ?? '').trim();
+  const visibleTitleBefore = normalizePoemTitle(poemTitle?.value ?? '');
+  const wasVisibleOnPage =
+    visibleTitleBefore === sourceTitle ||
+    state.currentAnalysisTitle === sourceTitle ||
+    selectedTitleBefore === sourceTitle ||
+    state.loadedVersionTitle === sourceTitle;
+
   const store = loadPoemMemoryStore();
   const sourceVersions = Array.isArray(store.poems?.[sourceTitle]) ? store.poems[sourceTitle] : [];
   if (!sourceVersions.length) {
@@ -2122,8 +2213,59 @@ function renamePoemTitleInline(currentTitle, nextTitleRaw) {
     state.loadedVersionTitle = targetTitle;
   }
 
-  refreshSavedPoemNameOptions(targetTitle);
-  renderSavedVersionList(targetTitle, savedPoemVersion?.value ?? '');
+  if (state.currentAnalysisTitle === sourceTitle) {
+    state.currentAnalysisTitle = targetTitle;
+  }
+
+  renamePoemColorKey(sourceTitle, targetTitle);
+  renameRhymeColorStoreKey(sourceTitle, targetTitle);
+
+  const previousLastWorked = loadLastWorkedPoemReference();
+  if (previousLastWorked && previousLastWorked.title === sourceTitle) {
+    saveLastWorkedPoemReference(targetTitle, previousLastWorked.versionId);
+  }
+
+  const sourceVersionIds = new Set(sourceVersions.map((entry) => String(entry?.id ?? '')).filter(Boolean));
+  if (sourceVersionIds.size) {
+    const remapped = new Set();
+    for (const key of selectedVersionIds) {
+      const parts = String(key ?? '').split('::');
+      if (parts.length !== 2) {
+        remapped.add(key);
+        continue;
+      }
+
+      const [keyTitle, keyVersionId] = parts;
+      if (keyTitle === sourceTitle && sourceVersionIds.has(keyVersionId)) {
+        remapped.add(makeVersionSelectionKey(targetTitle, keyVersionId));
+      } else {
+        remapped.add(key);
+      }
+    }
+    selectedVersionIds = remapped;
+  }
+
+  const preferredTitle = selectedTitleBefore === sourceTitle
+    ? targetTitle
+    : (selectedTitleBefore || targetTitle);
+  const preferredVersionId = selectedTitleBefore === sourceTitle
+    ? selectedVersionBefore
+    : String(savedPoemVersion?.value ?? selectedVersionBefore);
+
+  refreshSavedPoemNameOptions(preferredTitle);
+  if (preferredTitle) {
+    refreshSavedPoemVersionOptions(preferredTitle, preferredVersionId);
+  }
+
+  if (wasVisibleOnPage) {
+    if (poemTitle) {
+      poemTitle.value = targetTitle;
+    }
+    setPoemTitleDisplay(targetTitle);
+    applyPoemScreenTheme(targetTitle);
+  }
+
+  renderSavedVersionList(preferredTitle, preferredVersionId);
   syncQuickVersionLabelInput();
   updateVersionManagerStatus();
   return true;
@@ -4420,6 +4562,27 @@ defaultPoemColorBtn?.addEventListener('click', () => {
       clearDefaultPoemColor();
       updateDefaultColorButton();
       showToast('Color por defecto restablecido.', 'success');
+    }
+  });
+});
+currentPoemColorBtn?.addEventListener('click', () => {
+  const activeTitle = normalizePoemTitle(poemTitle?.value ?? savedPoemName?.value ?? state.currentAnalysisTitle ?? '');
+  const current = loadPoemColors()[activeTitle];
+  openColorPicker({
+    title: `Color de "${activeTitle}"`,
+    current: isHexColor(current) ? current : getPoemColorHex(0),
+    showDefaultAction: true,
+    onAccept: (colorHex) => {
+      setPoemCustomColor(activeTitle, colorHex);
+      applyPoemScreenTheme(activeTitle);
+      renderSavedVersionList(savedPoemName?.value ?? activeTitle, savedPoemVersion?.value ?? '');
+      showToast('Color del poema actualizado.', 'success');
+    },
+    onDefault: () => {
+      removePoemCustomColor(activeTitle);
+      applyPoemScreenTheme(activeTitle);
+      renderSavedVersionList(savedPoemName?.value ?? activeTitle, savedPoemVersion?.value ?? '');
+      showToast('Color del poema restablecido al predeterminado.', 'success');
     }
   });
 });
