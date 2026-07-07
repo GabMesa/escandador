@@ -24,7 +24,7 @@
       </section>
 
       <section class="controls" aria-label="Controles métricos">
-        <details class="control-card config-shell" open>
+        <details class="control-card config-shell">
           <summary>
             <span>Configuración</span>
             <span class="summary-hint">
@@ -90,8 +90,50 @@
                 </select>
                 <label for="rhymeScheme">Esquema de rima</label>
                 <input id="rhymeScheme" type="text" value="" title="Escribe un esquema de rima como ABBAACCDDC o ABBAABBA CDE CDE. Se validan las letras de los versos en orden." />
+                <label class="checkbox-row" for="repeatRhymeScheme">
+                  <input id="repeatRhymeScheme" type="checkbox" />
+                  Repetir esquema por estrofa
+                </label>
+                <p class="hint">Si está activo, los grupos separados por espacios se repiten por estrofa. Ej: ABAB ABBA → ABAB ABBA ABAB ABBA...</p>
+                <p class="hint">Haz clic en el color de cada rima para personalizarlo; los colores se guardan para ese poema.</p>
               </div>
             </details>
+          </div>
+        </details>
+
+        <details id="managerShell" class="control-card config-shell manager-shell">
+          <summary>
+            <span>Gestor de archivos</span>
+            <span class="summary-hint">
+              Poemas guardados y descargas
+              <svg class="config-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </span>
+          </summary>
+          <div class="manager-body">
+            <div id="versionManagerModal" class="version-manager-inline" aria-label="Gestor de archivos">
+              <div class="version-modal-body">
+                <div class="version-manager-inline-status-row">
+                </div>
+                <input id="versionSearchInput" type="search" class="version-search-input" placeholder="Buscar poemas, versiones o palabras del poema..." title="Buscar en poemas guardados" aria-label="Buscar en poemas guardados" />
+
+                <div class="version-modal-actions">
+                  <div class="version-modal-actions-row">
+                    <button id="newPoemManager" type="button" class="secondary compact-action">➕ Nuevo poema</button>
+                    <button id="selectAllVersions" type="button" class="secondary compact-action">Seleccionar todo</button>
+                    <button id="deleteSelectedVersions" type="button" class="secondary compact-action">Borrar seleccionadas</button>
+                  </div>
+                  <div class="version-modal-actions-row">
+                    <button id="defaultPoemColorBtn" type="button" class="secondary compact-action default-color-action" title="Color por defecto para nuevos poemas"><span class="default-color-swatch" aria-hidden="true"></span>Color por defecto</button>
+                    <button id="downloadSelectedMd" type="button" class="secondary format-action logo-action" title="Descargar seleccionadas en Markdown"><img src="https://www.docstomarkdown.pro/logo-48.png" alt="" aria-hidden="true" /><span>MD</span></button>
+                    <button id="downloadSelectedPdf" type="button" class="secondary format-action logo-action" title="Descargar seleccionadas en PDF"><img src="https://m.media-amazon.com/images/I/41Wt+LyfovL.png" alt="" aria-hidden="true" /><span>PDF</span></button>
+                  </div>
+                </div>
+
+                <div id="savedVersionsList" class="saved-versions-list" role="list"></div>
+              </div>
+            </div>
           </div>
         </details>
 
@@ -119,15 +161,27 @@
         <article class="panel input-panel">
           <div class="panel-header">
             <input id="poemTitle" class="poem-panel-title-input" type="text" value="Sin título" title="Título del poema" aria-label="Título del poema" />
-            <span class="panel-header-meta"><button id="savePoem" type="button" class="secondary icon-action" title="Guardar poema (Ctrl+S)">💾</button><button id="loadPoem" type="button" class="secondary icon-action" title="Cargar versión seleccionada (Ctrl+Shift+L)">📂</button><button id="importPoemsMd" type="button" class="secondary icon-action" title="Importar poemas desde archivo Markdown">📥</button><button id="exportPoemsMd" type="button" class="secondary icon-action" title="Descargar poemas guardados como Markdown">📤</button></span>
+            <span class="panel-header-meta">
+              <span class="top-action-group" role="group" aria-label="Acciones de poema">
+                <button id="newPoemTop" type="button" class="secondary icon-action" title="Nuevo poema">➕</button>
+                <button id="savePoem" type="button" class="secondary icon-action" title="Guardar poema (Ctrl+S)">💾</button>
+                <button id="importPoemsMd" type="button" class="secondary icon-action" title="Importar poemas desde archivo Markdown">📥</button>
+                <button id="exportPoemsMd" type="button" class="secondary format-action logo-action" title="Descargar poema abierto como Markdown" aria-label="Descargar poema abierto como Markdown"><img src="https://www.docstomarkdown.pro/logo-48.png" alt="" aria-hidden="true" /><span>MD</span></button>
+                <button id="downloadPoemPdf" type="button" class="secondary format-action logo-action" title="Descargar poema abierto como PDF" aria-label="Descargar poema abierto como PDF"><img src="https://m.media-amazon.com/images/I/41Wt+LyfovL.png" alt="" aria-hidden="true" /><span>PDF</span></button>
+              </span>
+            </span>
           </div>
           <div class="input-memory-bar">
             <select id="savedPoemName" title="Selecciona un poema guardado en memoria local."></select>
-            <button id="deletePoemEntry" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar todas las versiones del poema seleccionado">🗑</button>
+            <input id="editPoemNameInput" class="hidden" type="text" maxlength="80" title="Editar nombre del poema" />
+            <button id="editSelectors" type="button" class="secondary icon-action" title="Editar poema y versión">✏</button>
+            <button id="saveSelectorEdits" type="button" class="secondary icon-action hidden" title="Guardar cambios de poema y versión">✓</button>
+            <button id="cancelSelectorEdits" type="button" class="secondary icon-action hidden" title="Cancelar edición">✕</button>
+            <button id="deletePoemEntry" type="button" class="secondary icon-action" title="Eliminar todas las versiones del poema seleccionado">🗑</button>
             <label for="savedPoemVersion">Versión</label>
             <select id="savedPoemVersion" title="Selecciona una versión anterior del poema guardado."></select>
-            <button id="editPoemVersionLabel" type="button" class="secondary icon-action tiny-icon-action" title="Editar etiqueta de la versión seleccionada">🏷</button>
-            <button id="deletePoemVersion" type="button" class="secondary icon-action tiny-icon-action" title="Eliminar la versión seleccionada del historial">🗑</button>
+            <input id="editPoemVersionInput" class="hidden" type="text" maxlength="48" placeholder="Nombre de versión" title="Editar nombre de la versión" />
+            <button id="deletePoemVersion" type="button" class="secondary icon-action" title="Eliminar la versión seleccionada del historial">🗑</button>
           </div>
           <label class="sr-only" for="poemInput">Poema</label>
           <textarea id="poemInput" spellcheck="false" aria-label="Poema" title="Escribe o pega aquí tu poema. Usa líneas en blanco para separar estrofas."></textarea>
@@ -144,27 +198,22 @@
         </article>
       </section>
 
-      <div id="versionManagerModal" class="version-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="versionManagerTitle">
-        <div class="version-modal-backdrop" data-close-modal="true"></div>
-        <div class="version-modal-content">
-          <div class="version-modal-header">
-            <h3 id="versionManagerTitle">Gestor de versiones</h3>
-            <button id="closeVersionManager" type="button" class="secondary icon-action" title="Cerrar">✕</button>
+      <div id="colorPickerModal" class="color-picker-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="colorPickerTitle">
+        <div class="color-picker-backdrop" data-close-color-picker="true"></div>
+        <div class="color-picker-content">
+          <div class="color-picker-header">
+            <h3 id="colorPickerTitle">Elegir color</h3>
+            <button id="colorPickerClose" type="button" class="secondary icon-action" title="Cerrar" data-close-color-picker="true">✕</button>
           </div>
-
-          <div class="version-modal-body">
-            <div class="version-modal-actions">
-              <button id="selectAllVersions" type="button" class="secondary compact-action">Seleccionar todo</button>
-              <button id="deleteSelectedVersions" type="button" class="secondary compact-action">Borrar seleccionadas</button>
-            </div>
-
-            <label for="versionLabelInput">Etiqueta para la versión seleccionada</label>
-            <div class="version-label-row">
-              <input id="versionLabelInput" type="text" maxlength="48" placeholder="Ej: Borrador, Final, Revisión 2" />
-              <button id="applyVersionLabel" type="button" class="secondary compact-action">Aplicar etiqueta</button>
-            </div>
-
-            <div id="savedVersionsList" class="saved-versions-list" role="list"></div>
+          <div id="colorPickerSwatches" class="color-picker-swatches" role="listbox" aria-label="Paleta de colores"></div>
+          <div class="color-picker-custom-row">
+            <label for="colorPickerCustom">Personalizado</label>
+            <input id="colorPickerCustom" type="color" aria-label="Color personalizado" />
+            <span id="colorPickerPreview" class="color-picker-preview" aria-hidden="true"></span>
+          </div>
+          <div class="color-picker-actions">
+            <button id="colorPickerCancel" type="button" class="secondary" data-close-color-picker="true">Cancelar</button>
+            <button id="colorPickerAccept" type="button" class="primary">Aceptar</button>
           </div>
         </div>
       </div>
