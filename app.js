@@ -4796,6 +4796,47 @@ function computeAsonanteConsonantMatches(runtimes) {
   return matchesByLine;
 }
 
+function computeConsonanteAsonantMatches(runtimes) {
+  const matchesByLine = new Map();
+  if (state.rhymeMode !== 'consonante') {
+    return matchesByLine;
+  }
+
+  const verseRuntimes = runtimes.filter((runtime) => {
+    return runtime.lineAnalysis.text.trim()
+      && runtime.rhyme.mode === 'consonante'
+      && runtime.rhyme.assonantKey !== '-'
+      && runtime.rhyme.consonantKey !== '-';
+  });
+
+  const byAsonantKey = new Map();
+  for (const runtime of verseRuntimes) {
+    const key = runtime.rhyme.assonantKey;
+    if (!byAsonantKey.has(key)) {
+      byAsonantKey.set(key, []);
+    }
+    byAsonantKey.get(key).push(runtime);
+  }
+
+  for (const group of byAsonantKey.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    for (const runtime of group) {
+      const hasAssonantOnlyPair = group.some((other) => {
+        return other.lineIndex !== runtime.lineIndex && other.rhyme.consonantKey !== runtime.rhyme.consonantKey;
+      });
+
+      if (hasAssonantOnlyPair) {
+        matchesByLine.set(runtime.lineIndex, true);
+      }
+    }
+  }
+
+  return matchesByLine;
+}
+
 function getDisplayStressIndices(wordAnalysis) {
   const indices = new Set();
   if (!wordAnalysis || !Array.isArray(wordAnalysis.syllables)) {
@@ -5421,6 +5462,7 @@ function renderRhyme(runtime) {
   const label = String(runtime.rhyme.label ?? '').trim();
   const mixWarning = String(runtime.rhyme.mixWarning ?? '').trim();
   const consonantMatchHint = String(runtime.rhyme.consonantMatchHint ?? '').trim();
+  const assonantMatchHint = String(runtime.rhyme.assonantMatchHint ?? '').trim();
   const poemTitleScope = state.currentAnalysisTitle || normalizePoemTitle(poemTitle?.value ?? 'Sin título');
   const rhymeColor = getRhymeColor(poemTitleScope, label || runtime.rhyme.activeKey || '');
   const labelColor = label && label !== '-' ? rhymeColor : '#4b7f8f';
@@ -5432,11 +5474,12 @@ function renderRhyme(runtime) {
   const info = `Rima ${escapeHtml(source)} activa. Clave usada: ${escapeHtml(runtime.rhyme.activeKey)}. Consonante: ${escapeHtml(runtime.rhyme.consonantKey)}. Asonante: ${escapeHtml(runtime.rhyme.assonantKey)}. Final completa: ${escapeHtml(runtime.rhyme.finalWordKey)}.${agudaNote}`;
   const warningHint = mixWarning ? `<span class="hover-hint info-click jump-to-verse" role="button" tabindex="0" data-info="${escapeHtml(mixWarning)}" data-jump-line="${runtime.lineIndex}" title="${escapeHtml(mixWarning)}">!</span>` : '';
   const consonantHint = consonantMatchHint ? `<span class="hover-hint info-click" role="button" tabindex="0" data-info="${escapeHtml(consonantMatchHint)}" title="${escapeHtml(consonantMatchHint)}">C</span>` : '';
+  const assonantHint = assonantMatchHint ? `<span class="hover-hint info-click" role="button" tabindex="0" data-info="${escapeHtml(assonantMatchHint)}" title="${escapeHtml(assonantMatchHint)}">A</span>` : '';
   const swatchStyle = `background:${labelColor};color:${contrastColor};`;
   const colorAction = label && label !== '-'
     ? `<button type="button" class="rhyme-color-btn" data-action="edit-rhyme-color" data-rhyme-label="${escapeHtml(label)}" data-rhyme-poem="${escapeHtml(poemTitleScope)}" data-color="${escapeHtml(labelColor)}" title="Cambiar color de la rima ${escapeHtml(label)}" aria-label="Cambiar color de la rima ${escapeHtml(label)}" style="${swatchStyle}" onclick="window.openRhymeColorSelector(this)"></button>`
     : '';
-  return `<span class="rhyme-chip info-click ${runtime.lineAnalysis?.accentType === 'aguda' ? 'is-warning' : ''}" role="button" tabindex="0" data-info="${escapeHtml(info)}" title="${escapeHtml(info)}" style="${chipStyle}">${escapeHtml(formatRhymeChipLabel(runtime))}</span>${colorAction}${consonantHint}${warningHint}`;
+  return `<span class="rhyme-chip info-click ${runtime.lineAnalysis?.accentType === 'aguda' ? 'is-warning' : ''}" role="button" tabindex="0" data-info="${escapeHtml(info)}" title="${escapeHtml(info)}" style="${chipStyle}">${escapeHtml(formatRhymeChipLabel(runtime))}</span>${colorAction}${consonantHint}${assonantHint}${warningHint}`;
 }
 
 function formatWordInline(wordAnalysis) {
@@ -5690,10 +5733,14 @@ function renderAnalysis(result) {
   ensureRhymeColorStoreForPoem(state.currentAnalysisTitle, rhymeLabels);
   const asonanteMixWarnings = computeAsonanteConsonantMixWarnings(runtimes);
   const asonanteConsonantMatches = computeAsonanteConsonantMatches(runtimes);
+  const consonanteAsonantMatches = computeConsonanteAsonantMatches(runtimes);
   for (const runtime of runtimes) {
     runtime.rhyme.mixWarning = asonanteMixWarnings.get(runtime.lineIndex) ?? '';
     runtime.rhyme.consonantMatchHint = asonanteConsonantMatches.has(runtime.lineIndex)
       ? 'Este verso coincide en rima consonante dentro de su serie asonante.'
+      : '';
+    runtime.rhyme.assonantMatchHint = consonanteAsonantMatches.has(runtime.lineIndex)
+      ? 'Este verso coincide en rima asonante con otro verso, aunque no en consonante.'
       : '';
   }
   lastRuntime = runtimes;
